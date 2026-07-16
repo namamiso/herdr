@@ -53,9 +53,8 @@ pub(super) fn agent_rows(
                         AgentSidebarToken::StateText => {
                             Some(ResolvedTokenKind::StateText(state_text.to_string()))
                         }
-                        AgentSidebarToken::Workspace => {
-                            Some(ResolvedTokenKind::Workspace(entry.primary_label.clone()))
-                        }
+                        AgentSidebarToken::Workspace => (!entry.primary_label.is_empty())
+                            .then(|| ResolvedTokenKind::Workspace(entry.primary_label.clone())),
                         AgentSidebarToken::Tab => {
                             entry.primary_tab_label.clone().map(ResolvedTokenKind::Tab)
                         }

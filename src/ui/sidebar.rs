@@ -11,11 +11,12 @@ use ratatui::{
 use self::tokens::{ResolvedToken, ResolvedTokenKind, SpaceTokenContext};
 use super::scrollbar::{render_scrollbar, should_show_scrollbar};
 use super::status::{agent_icon, state_dot, state_label, state_label_color};
-use super::text::{display_width, display_width_u16, truncate_end};
-use crate::app::state::{AgentPanelSort, Palette};
+use super::text::{display_width, truncate_end};
+use crate::app::state::{AgentPanelScope, AgentPanelSort, Palette};
 use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
 use crate::terminal::TerminalRuntimeRegistry;
+use crate::workspace::Workspace;
 
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 2;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
@@ -84,19 +85,192 @@ fn agent_panel_sort_label(sort: AgentPanelSort) -> &'static str {
     }
 }
 
-pub(crate) fn agent_panel_toggle_rect(area: Rect, sort: AgentPanelSort) -> Rect {
-    if area.width == 0 || area.height < 2 {
-        return Rect::default();
+fn agent_panel_sort_short_label(sort: AgentPanelSort) -> &'static str {
+    match sort {
+        AgentPanelSort::Spaces => "grp",
+        AgentPanelSort::Priority => "prio",
+    }
+}
+
+fn agent_panel_scope_label(scope: AgentPanelScope) -> &'static str {
+    match scope {
+        AgentPanelScope::CurrentWorkspace => "current",
+        AgentPanelScope::AllWorkspaces => "all",
+    }
+}
+
+fn agent_panel_scope_short_label(scope: AgentPanelScope) -> &'static str {
+    match scope {
+        AgentPanelScope::CurrentWorkspace => "cur",
+        AgentPanelScope::AllWorkspaces => "all",
+    }
+}
+
+/// Workspace that the agent panel (both its list and its header directory name)
+/// should reference. Navigate/overlay modes where the sidebar selection is the
+/// operated-on target use `selected`; modes that act on the focused pane use
+/// `active`. Both the list and the header call this so they can never disagree.
+pub(crate) fn agent_panel_current_workspace_idx(app: &AppState) -> Option<usize> {
+    let idx = if mode_uses_sidebar_selection(app.mode) {
+        app.selected
+    } else {
+        app.active?
+    };
+    (idx < app.workspaces.len()).then_some(idx)
+}
+
+fn mode_uses_sidebar_selection(mode: Mode) -> bool {
+    matches!(
+        mode,
+        Mode::Navigate
+            | Mode::RenameWorkspace
+            | Mode::Resize
+            | Mode::ConfirmClose
+            | Mode::ContextMenu
+            | Mode::Settings
+            | Mode::GlobalMenu
+            | Mode::KeybindHelp
+            | Mode::ProductAnnouncement
+            | Mode::NewLinkedWorktree
+            | Mode::OpenExistingWorktree
+            | Mode::ConfirmRemoveWorktree
+    )
+}
+
+/// Basename of the workspace's project directory, using only path state already
+/// held in memory (no filesystem access during render). Prefers an explicit
+/// worktree checkout path, then the cached git repo root, then the identity cwd,
+/// and finally the custom display name. Returns `None` only when none of those
+/// yield a usable name (e.g. root `/` or empty paths).
+pub(crate) fn workspace_project_directory_name(ws: &Workspace) -> Option<String> {
+    fn basename(path: &std::path::Path) -> Option<String> {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
     }
 
-    let label = agent_panel_sort_label(sort);
-    let width = display_width_u16(label);
-    Rect::new(
-        area.x + area.width.saturating_sub(width),
-        area.y + 1,
-        width,
-        1,
-    )
+    ws.worktree_space()
+        .and_then(|wt| basename(&wt.checkout_path))
+        .or_else(|| ws.git_space().and_then(|space| basename(&space.repo_root)))
+        .or_else(|| basename(&ws.identity_cwd))
+        .or_else(|| ws.custom_name.clone().filter(|name| !name.is_empty()))
+}
+
+/// Project directory name for the agent panel's current workspace context.
+pub(crate) fn agent_panel_project_directory_name(app: &AppState) -> Option<String> {
+    let ws_idx = agent_panel_current_workspace_idx(app)?;
+    let ws = app.workspaces.get(ws_idx)?;
+    workspace_project_directory_name(ws)
+}
+
+/// Placement of the four agent-panel header regions on the header row. Both the
+/// renderer and the mouse hit-testing derive their geometry from this single
+/// computation so click targets always match what is drawn. The scope and sort
+/// rects are guaranteed disjoint (and disjoint from the directory rect).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentPanelHeaderLayout {
+    pub agents_label_rect: Rect,
+    pub directory_label_rect: Rect,
+    pub scope_toggle_rect: Rect,
+    pub sort_toggle_rect: Rect,
+    /// Directory text after width-aware truncation, or `None` when it does not fit.
+    pub directory_text: Option<String>,
+    pub scope_label: &'static str,
+    pub sort_label: &'static str,
+}
+
+const AGENTS_LABEL: &str = " agents";
+
+pub(crate) fn agent_panel_header_layout(
+    area: Rect,
+    directory_name: Option<&str>,
+    scope: AgentPanelScope,
+    sort: AgentPanelSort,
+) -> AgentPanelHeaderLayout {
+    let row_y = area.y + 1;
+    let agents_w = display_width(AGENTS_LABEL);
+    let mut layout = AgentPanelHeaderLayout {
+        agents_label_rect: Rect::default(),
+        directory_label_rect: Rect::default(),
+        scope_toggle_rect: Rect::default(),
+        sort_toggle_rect: Rect::default(),
+        directory_text: None,
+        scope_label: agent_panel_scope_label(scope),
+        sort_label: agent_panel_sort_label(sort),
+    };
+
+    if area.width == 0 || area.height < 2 {
+        return layout;
+    }
+    let total = area.width as usize;
+
+    // "agents" is the highest priority: always show at least the label itself.
+    let agents_visible_w = agents_w.min(total);
+    layout.agents_label_rect = Rect::new(area.x, row_y, agents_visible_w as u16, 1);
+
+    // Choose the scope/sort representation (full vs. abbreviated) and the
+    // directory width together. Directory name has the lowest priority, so it is
+    // truncated before the toggles abbreviate, and dropped before they vanish.
+    let full = (agent_panel_scope_label(scope), agent_panel_sort_label(sort));
+    let short = (
+        agent_panel_scope_short_label(scope),
+        agent_panel_sort_short_label(sort),
+    );
+
+    // Width needed by the right group "<scope> <sort>" (one space between).
+    let group_w = |labels: (&str, &str)| display_width(labels.0) + 1 + display_width(labels.1);
+    // Directory budget available for a given right-group width:
+    // total = agents + 1(space) + dir + 1(gap) + group
+    let dir_budget = |gw: usize| (total as isize) - (agents_w as isize) - 2 - (gw as isize);
+
+    let dir_full_w = directory_name.map(display_width).unwrap_or(0);
+    const MIN_DIR: usize = 2; // enough for at least "x…"
+
+    // Decide the plan.
+    let (labels, dir_show_w): ((&str, &str), Option<usize>) = {
+        let budget_full = dir_budget(group_w(full));
+        let budget_short = dir_budget(group_w(short));
+        if directory_name.is_some() && budget_full >= dir_full_w as isize {
+            (full, Some(dir_full_w)) // full dir + full toggles
+        } else if directory_name.is_some() && budget_full >= MIN_DIR as isize {
+            (full, Some(budget_full as usize)) // truncated dir + full toggles
+        } else if directory_name.is_some() && budget_short >= MIN_DIR as isize {
+            (short, Some(budget_short as usize)) // truncated dir + short toggles
+        } else if agents_w + 1 + group_w(full) <= total {
+            (full, None) // no dir, full toggles
+        } else if agents_w + 1 + group_w(short) <= total {
+            (short, None) // no dir, short toggles
+        } else {
+            // Only room for (part of) the agents label. Toggles are dropped.
+            return layout;
+        }
+    };
+
+    layout.scope_label = labels.0;
+    layout.sort_label = labels.1;
+
+    // Right group: sort is rightmost, scope sits one space to its left.
+    let scope_w = display_width(labels.0) as u16;
+    let sort_w = display_width(labels.1) as u16;
+    let sort_x = area.x + area.width - sort_w;
+    let scope_x = sort_x - 1 - scope_w;
+    layout.scope_toggle_rect = Rect::new(scope_x, row_y, scope_w, 1);
+    layout.sort_toggle_rect = Rect::new(sort_x, row_y, sort_w, 1);
+
+    // Directory sits after "agents ", truncated to its budget.
+    if let (Some(name), Some(width)) = (directory_name, dir_show_w) {
+        if width > 0 {
+            let text = truncate_end(name, width);
+            let text_w = display_width(&text) as u16;
+            if text_w > 0 {
+                layout.directory_label_rect =
+                    Rect::new(area.x + agents_w as u16 + 1, row_y, text_w, 1);
+                layout.directory_text = Some(text);
+            }
+        }
+    }
+
+    layout
 }
 
 pub(crate) fn agent_panel_entries(app: &AppState) -> Vec<AgentPanelEntry> {
@@ -123,13 +297,28 @@ fn agent_panel_entries_with_runtimes(
         }
     };
 
+    // Scope decides the listed set BEFORE entries are built, and sorting is
+    // applied only to what survives the scope filter. In `current` scope the
+    // workspace name is suppressed per row (the header already shows the
+    // directory name), while `all` scope keeps the existing labelled rows.
+    let scope = app.agent_panel_scope;
+    let current_idx = agent_panel_current_workspace_idx(app);
     let mut entries: Vec<_> = app
         .workspaces
         .iter()
         .enumerate()
+        .filter(|(ws_idx, _)| match scope {
+            AgentPanelScope::AllWorkspaces => true,
+            AgentPanelScope::CurrentWorkspace => Some(*ws_idx) == current_idx,
+        })
         .flat_map(|(ws_idx, ws)| {
             let multi_tab = ws.tabs.len() > 1;
-            let workspace_label = ws.display_name_from(&app.terminals, terminal_runtimes);
+            let workspace_label = match scope {
+                AgentPanelScope::CurrentWorkspace => String::new(),
+                AgentPanelScope::AllWorkspaces => {
+                    ws.display_name_from(&app.terminals, terminal_runtimes)
+                }
+            };
             ws.pane_details(&app.terminals)
                 .into_iter()
                 .map(move |detail| {
@@ -1308,22 +1497,47 @@ fn render_agent_detail(
         Rect::new(area.x, area.y, area.width, 1),
     );
 
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            " agents",
-            Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
-        )])),
-        Rect::new(area.x, area.y + 1, area.width, 1),
+    let directory_name = agent_panel_project_directory_name(app);
+    let layout = agent_panel_header_layout(
+        area,
+        directory_name.as_deref(),
+        app.agent_panel_scope,
+        app.agent_panel_sort,
     );
-    let toggle_rect = agent_panel_toggle_rect(area, app.agent_panel_sort);
-    if toggle_rect != Rect::default() {
+
+    if layout.agents_label_rect != Rect::default() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                agent_panel_sort_label(app.agent_panel_sort),
+                AGENTS_LABEL,
                 Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
-            ))
-            .alignment(Alignment::Right),
-            toggle_rect,
+            )),
+            layout.agents_label_rect,
+        );
+    }
+    if let Some(text) = &layout.directory_text {
+        if layout.directory_label_rect != Rect::default() {
+            frame.render_widget(
+                Paragraph::new(Span::styled(text.as_str(), Style::default().fg(p.subtext0))),
+                layout.directory_label_rect,
+            );
+        }
+    }
+    if layout.scope_toggle_rect != Rect::default() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                layout.scope_label,
+                Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+            )),
+            layout.scope_toggle_rect,
+        );
+    }
+    if layout.sort_toggle_rect != Rect::default() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                layout.sort_label,
+                Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+            )),
+            layout.sort_toggle_rect,
         );
     }
 
@@ -2632,5 +2846,545 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 },
             ]
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Agent panel scope + header (directory name) restoration
+    // -----------------------------------------------------------------------
+
+    fn ws_with_cwd(name: &str, cwd: &str) -> Workspace {
+        let mut ws = Workspace::test_new(name);
+        ws.identity_cwd = std::path::PathBuf::from(cwd);
+        ws
+    }
+
+    fn app_two() -> AppState {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![
+            ws_with_cwd("one", "/home/u/dev/one"),
+            ws_with_cwd("two", "/home/u/dev/two"),
+        ];
+        app.ensure_test_terminals();
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = Mode::Terminal;
+        app
+    }
+
+    fn set_agent(
+        app: &mut AppState,
+        ws_idx: usize,
+        tab_idx: usize,
+        pane_id: crate::layout::PaneId,
+        agent: Agent,
+        state: AgentState,
+    ) {
+        let terminal_id = app.workspaces[ws_idx].tabs[tab_idx].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.terminals.get_mut(&terminal_id).unwrap();
+        terminal.detected_agent = Some(agent);
+        terminal.state = state;
+    }
+
+    fn app_two_with_agents() -> AppState {
+        let mut app = app_two();
+        let p0 = app.workspaces[0].tabs[0].root_pane;
+        let p1 = app.workspaces[1].tabs[0].root_pane;
+        set_agent(&mut app, 0, 0, p0, Agent::Claude, AgentState::Working);
+        set_agent(&mut app, 1, 0, p1, Agent::Codex, AgentState::Blocked);
+        app
+    }
+
+    fn header_row_text(app: &AppState, w: u16, h: u16) -> String {
+        let area = Rect::new(0, 0, w, h);
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal
+            .draw(|frame| render_sidebar(app, &TerminalRuntimeRegistry::new(), frame, area))
+            .unwrap();
+        let (_, agent_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
+        row_text(terminal.backend().buffer(), agent_area.y + 1, w)
+    }
+
+    fn rects_disjoint(a: Rect, b: Rect) -> bool {
+        a.width == 0
+            || b.width == 0
+            || a.x + a.width <= b.x
+            || b.x + b.width <= a.x
+            || a.y + a.height <= b.y
+            || b.y + b.height <= a.y
+    }
+
+    fn rect_within(rect: Rect, area: Rect) -> bool {
+        rect.width == 0
+            || (rect.x >= area.x
+                && rect.x + rect.width <= area.x + area.width
+                && rect.y >= area.y
+                && rect.y + rect.height <= area.y + area.height)
+    }
+
+    // --- directory name derivation ---
+
+    #[test]
+    fn workspace_project_directory_name_uses_path_basename() {
+        assert_eq!(
+            workspace_project_directory_name(&ws_with_cwd("a", "/home/user/dev/project-a"))
+                .as_deref(),
+            Some("project-a")
+        );
+        assert_eq!(
+            workspace_project_directory_name(&ws_with_cwd(
+                "g",
+                "/home/utenma/dev/Pingers_NetworkGame"
+            ))
+            .as_deref(),
+            Some("Pingers_NetworkGame")
+        );
+        // trailing slash is normalized away by file_name().
+        assert_eq!(
+            workspace_project_directory_name(&ws_with_cwd("t", "/home/user/dev/project-a/"))
+                .as_deref(),
+            Some("project-a")
+        );
+    }
+
+    #[test]
+    fn workspace_project_directory_name_handles_wide_and_emoji_names() {
+        assert_eq!(
+            workspace_project_directory_name(&ws_with_cwd(
+                "j",
+                "/home/user/dev/ネットワークゲーム"
+            ))
+            .as_deref(),
+            Some("ネットワークゲーム")
+        );
+        assert_eq!(
+            workspace_project_directory_name(&ws_with_cwd("e", "/home/user/dev/🚀-rocket"))
+                .as_deref(),
+            Some("🚀-rocket")
+        );
+    }
+
+    #[test]
+    fn workspace_project_directory_name_prefers_real_dir_over_custom_name() {
+        // Custom display name is "Game Server" but the header must show the path basename.
+        let ws = ws_with_cwd("Game Server", "/home/utenma/dev/Pingers_NetworkGame");
+        assert_eq!(ws.custom_name.as_deref(), Some("Game Server"));
+        assert_eq!(
+            workspace_project_directory_name(&ws).as_deref(),
+            Some("Pingers_NetworkGame")
+        );
+    }
+
+    #[test]
+    fn workspace_project_directory_name_worktree_uses_checkout_dir() {
+        let mut ws = ws_with_cwd("repo", "/home/utenma/dev/repo");
+        ws.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "key".into(),
+            label: "label".into(),
+            repo_root: std::path::PathBuf::from("/home/utenma/dev/repo"),
+            checkout_path: std::path::PathBuf::from("/home/utenma/.herdr/worktrees/repo/ui-fix"),
+            is_linked_worktree: true,
+        });
+        assert_eq!(
+            workspace_project_directory_name(&ws).as_deref(),
+            Some("ui-fix")
+        );
+    }
+
+    #[test]
+    fn workspace_project_directory_name_root_falls_back_then_none() {
+        // Root path yields no basename; custom name is the last resort.
+        let ws = ws_with_cwd("My Space", "/");
+        assert_eq!(
+            workspace_project_directory_name(&ws).as_deref(),
+            Some("My Space")
+        );
+
+        // With neither a usable path nor a custom name, we omit the name entirely.
+        let mut ws = ws_with_cwd("unused", "/");
+        ws.custom_name = None;
+        assert_eq!(workspace_project_directory_name(&ws), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_project_directory_name_non_utf8_does_not_panic() {
+        use std::os::unix::ffi::OsStrExt;
+        let mut ws = ws_with_cwd("x", "/tmp");
+        ws.identity_cwd =
+            std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/home/\xff\xfe-bad-dir"));
+        let name = workspace_project_directory_name(&ws);
+        assert!(name.is_some());
+        assert!(name.unwrap().contains("bad-dir"));
+    }
+
+    // --- current workspace judgment (shared by list and header) ---
+
+    #[test]
+    fn current_workspace_idx_terminal_uses_active() {
+        let mut app = app_two();
+        app.mode = Mode::Terminal;
+        app.active = Some(1);
+        app.selected = 0;
+        assert_eq!(agent_panel_current_workspace_idx(&app), Some(1));
+    }
+
+    #[test]
+    fn current_workspace_idx_navigate_uses_selected() {
+        let mut app = app_two();
+        app.mode = Mode::Navigate;
+        app.active = Some(0);
+        app.selected = 1;
+        assert_eq!(agent_panel_current_workspace_idx(&app), Some(1));
+    }
+
+    #[test]
+    fn current_workspace_idx_sidebar_modes_use_selected() {
+        for mode in [
+            Mode::RenameWorkspace,
+            Mode::Settings,
+            Mode::ContextMenu,
+            Mode::ConfirmClose,
+            Mode::NewLinkedWorktree,
+        ] {
+            let mut app = app_two();
+            app.mode = mode;
+            app.active = Some(0);
+            app.selected = 1;
+            assert_eq!(
+                agent_panel_current_workspace_idx(&app),
+                Some(1),
+                "mode {mode:?} should follow selected"
+            );
+        }
+    }
+
+    #[test]
+    fn current_workspace_idx_none_and_invalid_indices_do_not_panic() {
+        let mut empty = crate::app::state::AppState::test_new();
+        empty.mode = Mode::Terminal;
+        empty.active = Some(0);
+        assert_eq!(agent_panel_current_workspace_idx(&empty), None);
+
+        let mut app = app_two();
+        app.mode = Mode::Terminal;
+        app.active = Some(9);
+        assert_eq!(agent_panel_current_workspace_idx(&app), None);
+        app.active = None;
+        assert_eq!(agent_panel_current_workspace_idx(&app), None);
+        app.mode = Mode::Navigate;
+        app.selected = 9;
+        assert_eq!(agent_panel_current_workspace_idx(&app), None);
+    }
+
+    #[test]
+    fn header_directory_and_list_reference_same_workspace() {
+        let mut app = app_two_with_agents();
+        app.agent_panel_scope = AgentPanelScope::CurrentWorkspace;
+        app.mode = Mode::Navigate;
+        app.active = Some(0);
+        app.selected = 1;
+        assert_eq!(
+            agent_panel_project_directory_name(&app).as_deref(),
+            Some("two")
+        );
+        let entries = agent_panel_entries(&app);
+        assert!(!entries.is_empty());
+        assert!(entries.iter().all(|entry| entry.ws_idx == 1));
+    }
+
+    // --- scope filtering / independence from sort ---
+
+    #[test]
+    fn current_scope_lists_only_current_and_suppresses_workspace_name() {
+        let mut app = app_two_with_agents();
+        app.agent_panel_scope = AgentPanelScope::CurrentWorkspace;
+        app.active = Some(0);
+        app.selected = 0;
+        let entries = agent_panel_entries(&app);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].ws_idx, 0);
+        assert!(
+            entries[0].primary_label.is_empty(),
+            "current scope must not repeat the workspace name per row"
+        );
+    }
+
+    #[test]
+    fn all_scope_lists_every_workspace_with_labels() {
+        let mut app = app_two_with_agents();
+        app.agent_panel_scope = AgentPanelScope::AllWorkspaces;
+        let entries = agent_panel_entries(&app);
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|entry| entry.ws_idx == 0));
+        assert!(entries.iter().any(|entry| entry.ws_idx == 1));
+        assert!(entries.iter().all(|entry| !entry.primary_label.is_empty()));
+    }
+
+    #[test]
+    fn scope_and_sort_are_independent_axes() {
+        for scope in [
+            AgentPanelScope::CurrentWorkspace,
+            AgentPanelScope::AllWorkspaces,
+        ] {
+            for sort in [AgentPanelSort::Spaces, AgentPanelSort::Priority] {
+                let mut app = app_two_with_agents();
+                app.agent_panel_scope = scope;
+                app.agent_panel_sort = sort;
+                let entries = agent_panel_entries(&app);
+                let expected = match scope {
+                    AgentPanelScope::CurrentWorkspace => 1,
+                    AgentPanelScope::AllWorkspaces => 2,
+                };
+                assert_eq!(entries.len(), expected, "scope {scope:?} sort {sort:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn current_scope_list_follows_selected_then_active() {
+        let mut app = app_two_with_agents();
+        app.agent_panel_scope = AgentPanelScope::CurrentWorkspace;
+
+        app.mode = Mode::Navigate;
+        app.selected = 0;
+        assert_eq!(agent_panel_entries(&app)[0].ws_idx, 0);
+        app.selected = 1;
+        assert_eq!(agent_panel_entries(&app)[0].ws_idx, 1);
+
+        app.mode = Mode::Terminal;
+        app.active = Some(0);
+        assert_eq!(agent_panel_entries(&app)[0].ws_idx, 0);
+        app.active = Some(1);
+        assert_eq!(agent_panel_entries(&app)[0].ws_idx, 1);
+    }
+
+    #[test]
+    fn empty_scope_result_does_not_panic() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.agent_panel_scope = AgentPanelScope::CurrentWorkspace;
+        app.mode = Mode::Terminal;
+        app.active = None;
+        assert!(agent_panel_entries(&app).is_empty());
+    }
+
+    // --- header layout geometry ---
+
+    #[test]
+    fn header_layout_normal_width_shows_all_regions() {
+        let layout = agent_panel_header_layout(
+            Rect::new(0, 0, 48, 6),
+            Some("Pingers_NetworkGame"),
+            AgentPanelScope::CurrentWorkspace,
+            AgentPanelSort::Spaces,
+        );
+        assert_eq!(layout.scope_label, "current");
+        assert_eq!(layout.sort_label, "grouped");
+        assert_eq!(
+            layout.directory_text.as_deref(),
+            Some("Pingers_NetworkGame")
+        );
+        assert!(rects_disjoint(
+            layout.scope_toggle_rect,
+            layout.sort_toggle_rect
+        ));
+        assert!(rects_disjoint(
+            layout.directory_label_rect,
+            layout.scope_toggle_rect
+        ));
+        assert!(rects_disjoint(
+            layout.directory_label_rect,
+            layout.sort_toggle_rect
+        ));
+    }
+
+    #[test]
+    fn header_layout_reports_all_and_priority_labels() {
+        let layout = agent_panel_header_layout(
+            Rect::new(0, 0, 48, 6),
+            Some("proj"),
+            AgentPanelScope::AllWorkspaces,
+            AgentPanelSort::Priority,
+        );
+        assert_eq!(layout.scope_label, "all");
+        assert_eq!(layout.sort_label, "priority");
+    }
+
+    #[test]
+    fn header_layout_truncates_directory_before_abbreviating_toggles() {
+        // Wide enough for full toggles but not the full directory name.
+        let layout = agent_panel_header_layout(
+            Rect::new(0, 0, 34, 6),
+            Some("VeryLongProjectDirectory"),
+            AgentPanelScope::CurrentWorkspace,
+            AgentPanelSort::Spaces,
+        );
+        assert_eq!(layout.scope_label, "current");
+        assert_eq!(layout.sort_label, "grouped");
+        let dir = layout
+            .directory_text
+            .expect("directory should still show truncated");
+        assert!(dir.ends_with('…'));
+        assert!(display_width(&dir) < display_width("VeryLongProjectDirectory"));
+    }
+
+    #[test]
+    fn header_layout_abbreviates_toggles_when_narrow() {
+        let layout = agent_panel_header_layout(
+            Rect::new(0, 0, 20, 6),
+            Some("VeryLongProjectDirectory"),
+            AgentPanelScope::CurrentWorkspace,
+            AgentPanelSort::Spaces,
+        );
+        assert_eq!(layout.scope_label, "cur");
+        assert_eq!(layout.sort_label, "grp");
+        assert!(rects_disjoint(
+            layout.scope_toggle_rect,
+            layout.sort_toggle_rect
+        ));
+    }
+
+    #[test]
+    fn header_layout_drops_directory_at_minimum_width() {
+        // " agents cur grp" needs 15 columns: the narrowest width that still
+        // shows the abbreviated toggles with the directory name dropped.
+        let layout = agent_panel_header_layout(
+            Rect::new(0, 0, 15, 6),
+            Some("VeryLongProjectDirectory"),
+            AgentPanelScope::CurrentWorkspace,
+            AgentPanelSort::Spaces,
+        );
+        assert_eq!(layout.scope_label, "cur");
+        assert_eq!(layout.sort_label, "grp");
+        assert!(layout.directory_text.is_none());
+        assert_ne!(layout.scope_toggle_rect, Rect::default());
+        assert_ne!(layout.sort_toggle_rect, Rect::default());
+    }
+
+    #[test]
+    fn header_layout_below_minimum_keeps_only_agents_label() {
+        // Narrower than "agents cur grp": toggles and directory are all dropped,
+        // but the agents label is still shown and nothing overlaps.
+        let layout = agent_panel_header_layout(
+            Rect::new(0, 0, 10, 6),
+            Some("VeryLongProjectDirectory"),
+            AgentPanelScope::CurrentWorkspace,
+            AgentPanelSort::Spaces,
+        );
+        assert_eq!(layout.scope_toggle_rect, Rect::default());
+        assert_eq!(layout.sort_toggle_rect, Rect::default());
+        assert_eq!(layout.directory_label_rect, Rect::default());
+        assert_ne!(layout.agents_label_rect, Rect::default());
+    }
+
+    #[test]
+    fn header_layout_wide_directory_truncation_uses_display_width() {
+        // A CJK directory name (each char width 2) must never be split mid-char
+        // and must respect display width when truncating.
+        let area = Rect::new(0, 0, 26, 6);
+        let layout = agent_panel_header_layout(
+            area,
+            Some("ネットワークゲーム対戦"),
+            AgentPanelScope::CurrentWorkspace,
+            AgentPanelSort::Spaces,
+        );
+        if let Some(dir) = &layout.directory_text {
+            // The directory rect width must equal the text display width and stay
+            // clear of the scope toggle.
+            assert_eq!(layout.directory_label_rect.width, display_width(dir) as u16);
+            assert!(rects_disjoint(
+                layout.directory_label_rect,
+                layout.scope_toggle_rect
+            ));
+        }
+        assert!(rect_within(layout.scope_toggle_rect, area));
+        assert!(rect_within(layout.sort_toggle_rect, area));
+    }
+
+    #[test]
+    fn header_layout_without_directory_keeps_toggles() {
+        let layout = agent_panel_header_layout(
+            Rect::new(0, 0, 30, 6),
+            None,
+            AgentPanelScope::CurrentWorkspace,
+            AgentPanelSort::Spaces,
+        );
+        assert!(layout.directory_text.is_none());
+        assert_eq!(layout.directory_label_rect, Rect::default());
+        assert_ne!(layout.scope_toggle_rect, Rect::default());
+        assert_ne!(layout.sort_toggle_rect, Rect::default());
+    }
+
+    #[test]
+    fn header_layout_extreme_narrow_never_panics_or_overlaps() {
+        for width in 0..40u16 {
+            let area = Rect::new(0, 0, width, 6);
+            let layout = agent_panel_header_layout(
+                area,
+                Some("Pingers_NetworkGame"),
+                AgentPanelScope::CurrentWorkspace,
+                AgentPanelSort::Spaces,
+            );
+            assert!(rects_disjoint(
+                layout.scope_toggle_rect,
+                layout.sort_toggle_rect
+            ));
+            assert!(rects_disjoint(
+                layout.directory_label_rect,
+                layout.scope_toggle_rect
+            ));
+            assert!(rects_disjoint(
+                layout.directory_label_rect,
+                layout.sort_toggle_rect
+            ));
+            assert!(rect_within(layout.agents_label_rect, area));
+            assert!(rect_within(layout.directory_label_rect, area));
+            assert!(rect_within(layout.scope_toggle_rect, area));
+            assert!(rect_within(layout.sort_toggle_rect, area));
+        }
+    }
+
+    // --- rendered header string ---
+
+    #[test]
+    fn renders_header_directory_scope_and_sort() {
+        let mut app = app_two_with_agents();
+        app.agent_panel_scope = AgentPanelScope::CurrentWorkspace;
+        app.mode = Mode::Terminal;
+        app.active = Some(0);
+        app.selected = 0;
+        let text = header_row_text(&app, 44, 20);
+        assert!(text.trim_start().starts_with("agents one"), "got {text:?}");
+        assert!(text.contains("current"), "got {text:?}");
+        assert!(text.contains("grouped"), "got {text:?}");
+    }
+
+    #[test]
+    fn rendered_header_follows_space_selection_and_labels() {
+        let mut app = app_two_with_agents();
+        app.agent_panel_scope = AgentPanelScope::CurrentWorkspace;
+        app.mode = Mode::Navigate;
+        app.selected = 1;
+        let text = header_row_text(&app, 44, 20);
+        assert!(text.contains("two"), "got {text:?}");
+
+        app.agent_panel_scope = AgentPanelScope::AllWorkspaces;
+        assert!(header_row_text(&app, 44, 20).contains("all"));
+
+        app.agent_panel_sort = AgentPanelSort::Priority;
+        assert!(header_row_text(&app, 44, 20).contains("priority"));
+    }
+
+    #[test]
+    fn rendered_header_omits_directory_without_workspace() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.active = None;
+        let text = header_row_text(&app, 40, 20);
+        let trimmed = text.trim();
+        assert!(trimmed.starts_with("agents"), "got {text:?}");
+        assert!(trimmed.contains("all"), "got {text:?}");
+        assert!(!trimmed.contains("none") && !trimmed.contains("null"));
     }
 }

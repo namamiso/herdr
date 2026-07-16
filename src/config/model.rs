@@ -106,6 +106,25 @@ impl AgentPanelSortConfig {
     }
 }
 
+/// Which workspaces the agent panel lists. Independent of `AgentPanelSortConfig`,
+/// which only controls ordering within the listed set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentPanelScopeConfig {
+    Current,
+    #[default]
+    All,
+}
+
+impl AgentPanelScopeConfig {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::All => "all",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HostCursorModeConfig {
@@ -812,6 +831,8 @@ pub struct UiConfig {
     pub hide_tab_bar_when_single_tab: bool,
     /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
     pub agent_panel_sort: AgentPanelSortConfig,
+    /// Agent sidebar scope. Saved values are "current" or "all". Default: "all".
+    pub agent_panel_scope: AgentPanelScopeConfig,
     /// Expanded sidebar row composition.
     pub sidebar: SidebarConfig,
     /// Accent color for highlights, borders, and navigation UI.
@@ -1008,6 +1029,7 @@ impl Default for UiConfig {
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
             agent_panel_sort: AgentPanelSortConfig::Spaces,
+            agent_panel_scope: AgentPanelScopeConfig::All,
             sidebar: SidebarConfig::default(),
             accent: "cyan".into(),
             toast: ToastConfig::default(),
@@ -1229,6 +1251,57 @@ agent_panel_scope = "current"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Spaces);
+    }
+
+    #[test]
+    fn agent_panel_scope_config_parses_and_defaults() {
+        // Unset defaults to "all" for backward compatibility with the latest release.
+        assert_eq!(
+            Config::default().ui.agent_panel_scope,
+            AgentPanelScopeConfig::All
+        );
+
+        let toml = r#"
+[ui]
+agent_panel_scope = "current"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.agent_panel_scope, AgentPanelScopeConfig::Current);
+
+        let toml = r#"
+[ui]
+agent_panel_scope = "all"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.agent_panel_scope, AgentPanelScopeConfig::All);
+    }
+
+    #[test]
+    fn agent_panel_scope_and_sort_are_independent_settings() {
+        let toml = r#"
+[ui]
+agent_panel_scope = "current"
+agent_panel_sort = "priority"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.agent_panel_scope, AgentPanelScopeConfig::Current);
+        assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Priority);
+    }
+
+    #[test]
+    fn agent_panel_scope_config_round_trips_via_as_str() {
+        assert_eq!(AgentPanelScopeConfig::Current.as_str(), "current");
+        assert_eq!(AgentPanelScopeConfig::All.as_str(), "all");
+    }
+
+    #[test]
+    fn invalid_agent_panel_scope_is_an_error_not_a_panic() {
+        let toml = r#"
+[ui]
+agent_panel_scope = "bogus"
+"#;
+        // A bad value surfaces as a recoverable parse error, never a process abort.
+        assert!(toml::from_str::<Config>(toml).is_err());
     }
 
     #[test]

@@ -675,6 +675,16 @@
           ]
         },
         {
+          "key": "ui.agent_panel_scope",
+          "type": "enum",
+          "default": "\"all\"",
+          "description": "Agent sidebar scope. Saved values are \"current\" or \"all\". \"current\" lists only the current workspace's agents; \"all\" lists agents across every space.",
+          "values": [
+            "current",
+            "all"
+          ]
+        },
+        {
           "key": "ui.sidebar.agents.row_gap",
           "type": "integer",
           "default": "0",

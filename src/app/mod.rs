@@ -233,6 +233,15 @@ fn agent_panel_sort_from_config(
     }
 }
 
+fn agent_panel_scope_from_config(
+    scope: crate::config::AgentPanelScopeConfig,
+) -> state::AgentPanelScope {
+    match scope {
+        crate::config::AgentPanelScopeConfig::Current => state::AgentPanelScope::CurrentWorkspace,
+        crate::config::AgentPanelScopeConfig::All => state::AgentPanelScope::AllWorkspaces,
+    }
+}
+
 /// Parse the configured agent name list into a deduplicated set of `Agent`
 /// values. Unknown agent names are silently dropped so a typo cannot disable
 /// other valid entries.
@@ -453,6 +462,7 @@ impl App {
         };
 
         let agent_panel_sort = agent_panel_sort_from_config(config.ui.agent_panel_sort);
+        let agent_panel_scope = agent_panel_scope_from_config(config.ui.agent_panel_scope);
 
         // Validate sidebar bounds before they reach any `u16::clamp(min, max)`
         // call: `clamp` panics when `min > max`. On bad config, fall back to
@@ -606,6 +616,7 @@ impl App {
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             sidebar_section_split,
             agent_panel_sort,
+            agent_panel_scope,
             sidebar_agents: config.ui.sidebar.agents.clone(),
             sidebar_spaces: config.ui.sidebar.spaces.clone(),
             next_agent_state_change_seq: 0,
@@ -1422,6 +1433,8 @@ impl App {
                 self.state.hide_tab_bar_when_single_tab = config.ui.hide_tab_bar_when_single_tab;
                 self.state.agent_panel_sort =
                     agent_panel_sort_from_config(config.ui.agent_panel_sort);
+                self.state.agent_panel_scope =
+                    agent_panel_scope_from_config(config.ui.agent_panel_scope);
                 self.state.sidebar_agents = config.ui.sidebar.agents.clone();
                 self.state.sidebar_spaces = config.ui.sidebar.spaces.clone();
                 self.state.agent_panel_scroll = 0;
@@ -3149,6 +3162,52 @@ mod tests {
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn save_agent_panel_scope_persists_and_keeps_sort_without_duplicate_ui_section() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("save-agent-panel-scope");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Pre-existing [ui] section already carries a sort setting.
+        std::fs::write(
+            &path,
+            "onboarding = false\n[ui]\nagent_panel_sort = \"priority\"\n",
+        )
+        .unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        app.save_agent_panel_scope(state::AgentPanelScope::CurrentWorkspace);
+
+        assert_eq!(
+            app.state.agent_panel_scope,
+            state::AgentPanelScope::CurrentWorkspace
+        );
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("agent_panel_scope = \"current\""));
+        // The sibling sort setting must survive the scope write.
+        assert!(content.contains("agent_panel_sort = \"priority\""));
+        // The [ui] header must not be duplicated.
+        assert_eq!(content.matches("[ui]").count(), 1);
+        assert!(app.state.config_diagnostic.is_none());
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn startup_uses_configured_agent_panel_scope() {
+        let mut config = Config::default();
+        config.ui.agent_panel_scope = crate::config::AgentPanelScopeConfig::Current;
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let app = App::new(&config, true, None, api_rx, crate::api::EventHub::default());
+
+        assert_eq!(
+            app.state.agent_panel_scope,
+            state::AgentPanelScope::CurrentWorkspace
+        );
     }
 
     #[test]
