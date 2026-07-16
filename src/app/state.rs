@@ -976,6 +976,15 @@ pub enum AgentPanelSort {
     Priority,
 }
 
+/// Which workspaces the agent panel lists. Independent of [`AgentPanelSort`],
+/// which only controls ordering within the listed set. TUI presentation state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AgentPanelScope {
+    CurrentWorkspace,
+    #[default]
+    AllWorkspaces,
+}
+
 // ---------------------------------------------------------------------------
 // Settings UI state
 // ---------------------------------------------------------------------------
@@ -1493,6 +1502,7 @@ pub struct AppState {
     pub agent_panel_sort: AgentPanelSort,
     /// Transient session-wide projection override for the built-in Agents view.
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
+    pub agent_panel_scope: AgentPanelScope,
     pub sidebar_agents: crate::config::AgentsSidebarConfig,
     pub sidebar_spaces: crate::config::SpacesSidebarConfig,
     pub next_agent_state_change_seq: u64,
@@ -1871,6 +1881,7 @@ impl AppState {
             sidebar_section_split: 0.5,
             agent_panel_sort: AgentPanelSort::Spaces,
             agent_view_override: None,
+            agent_panel_scope: AgentPanelScope::AllWorkspaces,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
             sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
             next_agent_state_change_seq: 0,

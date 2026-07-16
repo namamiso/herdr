@@ -1116,6 +1116,12 @@ impl AppState {
             let workspace_id = self.workspaces[idx].id.clone();
             crate::logging::workspace_focused(&workspace_id);
             self.mark_session_dirty();
+            if matches!(
+                self.agent_panel_scope,
+                crate::app::state::AgentPanelScope::CurrentWorkspace
+            ) {
+                self.agent_panel_scroll = 0;
+            }
             self.ensure_workspace_visible(idx);
             if let Some(ws) = self.workspaces.get_mut(idx) {
                 let active_tab = ws.active_tab;
@@ -1152,6 +1158,14 @@ impl AppState {
             crate::logging::workspace_focused(&workspace_id);
         }
         self.mark_session_dirty();
+        if workspace_changed
+            && matches!(
+                self.agent_panel_scope,
+                crate::app::state::AgentPanelScope::CurrentWorkspace
+            )
+        {
+            self.agent_panel_scroll = 0;
+        }
         self.ensure_workspace_visible(ws_idx);
         if let Some(ws) = self.workspaces.get_mut(ws_idx) {
             ws.switch_tab(tab_idx);
@@ -1324,8 +1338,17 @@ impl AppState {
             .saturating_add_signed(delta)
             .min(order.len().saturating_sub(1));
         if let Some(ws_idx) = order.get(target_pos).copied() {
+            let changed = self.selected != ws_idx;
             self.selected = ws_idx;
             self.ensure_workspace_visible(ws_idx);
+            if changed
+                && matches!(
+                    self.agent_panel_scope,
+                    crate::app::state::AgentPanelScope::CurrentWorkspace
+                )
+            {
+                self.agent_panel_scroll = 0;
+            }
         }
     }
 

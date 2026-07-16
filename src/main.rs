@@ -317,6 +317,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # "workspaces" is accepted as an alias for "spaces".
 # agent_panel_sort = "spaces"
 
+# Agent panel scope: "all" lists agents across every space, "current" lists only
+# the current workspace's agents. Toggling it in the sidebar saves this setting.
+# agent_panel_scope = "all"
+
 # Expanded agent rows. Built-ins are state_icon, state_text, workspace, tab, pane, agent,
 # terminal_title, and terminal_title_stripped.
 # Custom values reported through pane metadata use a $name token.

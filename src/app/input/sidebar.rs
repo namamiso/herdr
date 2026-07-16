@@ -4,6 +4,14 @@ use crate::app::state::{AppState, ViewLayout};
 
 use super::ScrollbarClickTarget;
 
+fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
+    rect.width > 0
+        && col >= rect.x
+        && col < rect.x + rect.width
+        && row >= rect.y
+        && row < rect.y + rect.height
+}
+
 impl AppState {
     pub(super) fn workspace_list_rect(&self) -> Rect {
         let sidebar = self.view.sidebar_rect;
@@ -412,21 +420,35 @@ impl AppState {
         best.map(|(insert_idx, _)| insert_idx)
     }
 
-    pub(super) fn on_agent_panel_sort_toggle(&self, col: u16, row: u16) -> bool {
+    /// Header region geometry, computed identically to the renderer so click
+    /// targets always match what is drawn. `None` while an agent view override
+    /// is active: the header then shows the override label instead of the
+    /// directory/scope/sort controls, so neither toggle is clickable.
+    fn agent_panel_header_layout(&self) -> Option<crate::ui::AgentPanelHeaderLayout> {
         if self.sidebar_collapsed || self.agent_view_override.is_some() {
-            return false;
+            return None;
         }
-
         let (_, detail_area) = crate::ui::expanded_sidebar_sections(
             self.view.sidebar_rect,
             self.sidebar_section_split,
         );
-        let rect = crate::ui::agent_panel_toggle_rect(detail_area, self.agent_panel_sort);
-        rect.width > 0
-            && col >= rect.x
-            && col < rect.x + rect.width
-            && row >= rect.y
-            && row < rect.y + rect.height
+        let directory_name = crate::ui::agent_panel_project_directory_name(self);
+        Some(crate::ui::agent_panel_header_layout(
+            detail_area,
+            directory_name.as_deref(),
+            self.agent_panel_scope,
+            self.agent_panel_sort,
+        ))
+    }
+
+    pub(super) fn on_agent_panel_sort_toggle(&self, col: u16, row: u16) -> bool {
+        self.agent_panel_header_layout()
+            .is_some_and(|layout| rect_contains(layout.sort_toggle_rect, col, row))
+    }
+
+    pub(super) fn on_agent_panel_scope_toggle(&self, col: u16, row: u16) -> bool {
+        self.agent_panel_header_layout()
+            .is_some_and(|layout| rect_contains(layout.scope_toggle_rect, col, row))
     }
 
     pub(super) fn agent_detail_target_at(
@@ -482,7 +504,7 @@ mod tests {
 
     use super::super::{app_for_mouse_test, capture_snapshot, mouse, unique_temp_path};
     use crate::{
-        app::state::{AgentPanelSort, DragTarget, Mode},
+        app::state::{AgentPanelScope, AgentPanelSort, DragTarget, Mode},
         config::SidebarCollapsedModeConfig,
         detect::{Agent, AgentState},
         workspace::Workspace,
@@ -751,6 +773,20 @@ mod tests {
         );
     }
 
+    fn agent_panel_header_layout_for(app: &crate::app::App) -> crate::ui::AgentPanelHeaderLayout {
+        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
+            app.state.view.sidebar_rect,
+            app.state.sidebar_section_split,
+        );
+        let directory_name = crate::ui::agent_panel_project_directory_name(&app.state);
+        crate::ui::agent_panel_header_layout(
+            detail_area,
+            directory_name.as_deref(),
+            app.state.agent_panel_scope,
+            app.state.agent_panel_sort,
+        )
+    }
+
     #[test]
     fn clicking_plain_tab_row_activates_the_tab_and_skips_the_heading() {
         let mut app = app_for_mouse_test();
@@ -861,11 +897,7 @@ mod tests {
         app.state.mode = Mode::Terminal;
         app.state.agent_panel_scroll = 3;
 
-        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
-            app.state.view.sidebar_rect,
-            app.state.sidebar_section_split,
-        );
-        let toggle = crate::ui::agent_panel_toggle_rect(detail_area, app.state.agent_panel_sort);
+        let toggle = agent_panel_header_layout_for(&app).sort_toggle_rect;
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             toggle.x,
@@ -874,6 +906,48 @@ mod tests {
 
         assert_eq!(app.state.agent_panel_sort, AgentPanelSort::Priority);
         assert_eq!(app.state.agent_panel_scroll, 0);
+    }
+
+    #[test]
+    fn clicking_agent_panel_scope_toggle_switches_scope_and_persists() {
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let path = unique_temp_path("agent-panel-scope-toggle");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "onboarding = false\n").unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.agent_panel_scope = AgentPanelScope::AllWorkspaces;
+        app.state.agent_panel_scroll = 4;
+
+        let layout = agent_panel_header_layout_for(&app);
+        let scope_rect = layout.scope_toggle_rect;
+        // The scope and sort click regions must never overlap.
+        let sort_rect = layout.sort_toggle_rect;
+        assert!(
+            scope_rect.x + scope_rect.width <= sort_rect.x
+                || sort_rect.x + sort_rect.width <= scope_rect.x
+        );
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            scope_rect.x,
+            scope_rect.y,
+        ));
+
+        assert_eq!(
+            app.state.agent_panel_scope,
+            AgentPanelScope::CurrentWorkspace
+        );
+        assert_eq!(app.state.agent_panel_scroll, 0);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("agent_panel_scope = \"current\""));
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
     }
 
     #[test]

@@ -408,10 +408,18 @@ impl App {
     }
 
     fn agent_panel_has_animation(&self) -> bool {
-        self.state
-            .workspaces
-            .iter()
-            .any(|ws| ws.has_working_pane(&self.state.terminals))
+        match self.state.agent_panel_scope {
+            crate::app::state::AgentPanelScope::CurrentWorkspace => {
+                crate::ui::agent_panel_current_workspace_idx(&self.state)
+                    .and_then(|idx| self.state.workspaces.get(idx))
+                    .is_some_and(|ws| ws.has_working_pane(&self.state.terminals))
+            }
+            crate::app::state::AgentPanelScope::AllWorkspaces => self
+                .state
+                .workspaces
+                .iter()
+                .any(|ws| ws.has_working_pane(&self.state.terminals)),
+        }
     }
 
     pub(crate) fn tick_selection_autoscroll(&mut self, now: Instant) {
