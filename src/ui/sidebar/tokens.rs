@@ -64,6 +64,19 @@ pub(super) fn agent_rows(
                         AgentSidebarToken::Agent => {
                             entry.agent_label.clone().map(ResolvedTokenKind::Agent)
                         }
+                        // The detected agent type, shown as a disambiguation
+                        // badge only when the agent carries a custom name (the
+                        // `agent` token already folds that name into the primary
+                        // identity, so without a name this would just duplicate
+                        // it).
+                        AgentSidebarToken::AgentType => entry
+                            .agent
+                            .filter(|_| entry.agent_name.is_some())
+                            .map(|agent| {
+                                ResolvedTokenKind::Agent(
+                                    crate::detect::agent_label(agent).to_string(),
+                                )
+                            }),
                         AgentSidebarToken::TerminalTitle => entry
                             .terminal_title
                             .clone()
@@ -167,6 +180,7 @@ mod tests {
             terminal_title: None,
             terminal_title_stripped: None,
             agent_label: Some("pi".into()),
+            agent_name: None,
             agent: Some(crate::detect::Agent::Pi),
             state: AgentState::Working,
             seen: true,
@@ -203,6 +217,37 @@ mod tests {
             vec![ResolvedToken::unstyled(ResolvedTokenKind::Agent(
                 "pi".into()
             ))]
+        );
+    }
+
+    #[test]
+    fn agent_type_badge_appears_only_alongside_a_custom_name() {
+        let config = AgentsSidebarConfig {
+            rows: vec![vec![AgentSidebarToken::Agent, AgentSidebarToken::AgentType]],
+            ..Default::default()
+        };
+
+        // No custom name: the type badge elides so it does not duplicate the
+        // primary `agent` identity.
+        let unnamed = entry();
+        assert_eq!(
+            agent_rows(&config, &unnamed, "working"),
+            vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Agent(
+                "pi".into()
+            ))]]
+        );
+
+        // Custom name present: the primary shows the name, the badge shows the
+        // detected agent type.
+        let mut named = entry();
+        named.agent_name = Some("planner".into());
+        named.agent_label = Some("planner".into());
+        assert_eq!(
+            agent_rows(&config, &named, "working"),
+            vec![vec![
+                ResolvedToken::unstyled(ResolvedTokenKind::Agent("planner".into())),
+                ResolvedToken::unstyled(ResolvedTokenKind::Agent("pi".into())),
+            ]]
         );
     }
 

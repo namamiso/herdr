@@ -761,6 +761,7 @@ pub(super) fn apply_context_menu_action(
                     let terminal_id = pane.attached_terminal_id.clone();
                     if let Some(terminal) = state.terminals.get_mut(&terminal_id) {
                         terminal.clear_manual_label();
+                        terminal.clear_agent_name();
                         state.mark_session_dirty();
                     }
                 }
@@ -973,15 +974,7 @@ impl App {
                 if let (Some(ws_idx), Some(pane_id)) =
                     (self.state.active, self.state.rename_pane_target)
                 {
-                    if let Some(pane_id) = self.public_pane_id(ws_idx, pane_id) {
-                        self.runtime_pane_rename(
-                            "tui.pane.rename",
-                            crate::api::schema::PaneRenameParams {
-                                pane_id,
-                                label: Some(new_name),
-                            },
-                        );
-                    }
+                    self.rename_pane_or_agent(ws_idx, pane_id, Some(new_name));
                 }
             }
             _ => {}
@@ -1165,15 +1158,7 @@ impl App {
                 },
                 Some("Clear pane name"),
             ) => {
-                if let Some(pane_id) = self.public_pane_id(ws_idx, pane_id) {
-                    self.runtime_pane_rename(
-                        "tui.pane.clear_name",
-                        crate::api::schema::PaneRenameParams {
-                            pane_id,
-                            label: None,
-                        },
-                    );
-                }
+                self.rename_pane_or_agent(ws_idx, pane_id, None);
                 self.state.mode = Mode::Terminal;
             }
             (
@@ -1971,6 +1956,49 @@ mod tests {
         assert_eq!(state.selected, 0);
         assert_eq!(state.mode, Mode::ConfirmClose);
         assert_eq!(state.workspaces.len(), 2);
+    }
+
+    #[test]
+    fn context_menu_clear_pane_name_clears_agent_name_and_label_for_agent_panes() {
+        let mut app = app_with_test_workspaces(&["main"]);
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .cloned()
+            .expect("terminal");
+        {
+            let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
+            terminal.set_detected_state(
+                Some(crate::detect::Agent::Pi),
+                crate::detect::AgentState::Idle,
+            );
+            terminal.set_agent_name("reviewer".into());
+            terminal.set_manual_label("reviewer".into());
+        }
+        app.state.mode = Mode::ContextMenu;
+        let menu = ContextMenuState {
+            kind: ContextMenuKind::Pane {
+                ws_idx: 0,
+                tab_idx: 0,
+                pane_id,
+                source_pane_id: None,
+                has_manual_label: true,
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        let idx = menu
+            .items()
+            .iter()
+            .position(|item| *item == "Clear pane name")
+            .expect("clear pane name item");
+
+        app.apply_context_menu_action_via_api(menu, idx);
+
+        let terminal = app.state.terminals.get(&terminal_id).expect("terminal");
+        assert!(terminal.agent_name.is_none());
+        assert!(terminal.manual_label.is_none());
     }
 
     #[test]

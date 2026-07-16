@@ -103,7 +103,7 @@ Each supported agent has its own integration name and behavior. See [Integration
 
 ## Custom agent labels
 
-You can rename an agent target for display:
+You can give an agent a custom name for display:
 
 ```bash
 herdr agent rename w1:p1 reviewer
@@ -111,6 +111,10 @@ herdr agent rename reviewer --clear
 ```
 
 Targets accept terminal IDs, unique agent names, detected or reported agent labels, and legacy pane IDs.
+
+In the app you can also name the focused agent through the pane rename action (or the pane context menu), which shows **name agent** for agent panes. The name leads the Agent panel entry, with the detected agent type kept beside it (see the [`agent` and `agent_type` tokens](/docs/configuration/#sidebar-row-layouts)).
+
+Names are unique per session. If the name you choose is already taken, Herdr keeps your rename and appends the next free number, so a second `reviewer` becomes `reviewer 2`.
 
 ## Custom status labels
 

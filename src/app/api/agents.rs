@@ -231,6 +231,109 @@ mod tests {
         app
     }
 
+    fn mark_agent_terminal(app: &mut App, ws_idx: usize) -> crate::terminal::TerminalId {
+        let pane_id = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[ws_idx]
+            .terminal_id(pane_id)
+            .cloned()
+            .expect("test terminal");
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("terminal")
+            .set_detected_state(Some(Agent::Pi), AgentState::Idle);
+        terminal_id
+    }
+
+    #[test]
+    fn renaming_to_an_existing_agent_name_appends_a_numeric_suffix() {
+        let mut app = app_with_agent();
+        app.state.workspaces.push(Workspace::test_new("second"));
+        app.state.workspaces.push(Workspace::test_new("third"));
+        app.state.ensure_test_terminals();
+
+        let first = mark_agent_terminal(&mut app, 0);
+        let second = mark_agent_terminal(&mut app, 1);
+        let third = mark_agent_terminal(&mut app, 2);
+
+        app.state
+            .terminals
+            .get_mut(&first)
+            .expect("first terminal")
+            .set_agent_name("planner".into());
+
+        let Ok(renamed) = app.rename_agent_target(&second.to_string(), Some("planner".into()))
+        else {
+            panic!("rename should succeed instead of erroring on a duplicate");
+        };
+        assert_eq!(renamed.name.as_deref(), Some("planner 2"));
+
+        // A third collision walks past the taken suffix to the next free one.
+        let Ok(renamed) = app.rename_agent_target(&third.to_string(), Some("planner".into()))
+        else {
+            panic!("rename should succeed");
+        };
+        assert_eq!(renamed.name.as_deref(), Some("planner 3"));
+
+        // A fresh, unused name stays verbatim.
+        let Ok(renamed) = app.rename_agent_target(&second.to_string(), Some("reviewer".into()))
+        else {
+            panic!("rename should succeed");
+        };
+        assert_eq!(renamed.name.as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn clearing_an_agent_name_also_clears_the_mirrored_pane_label() {
+        let mut app = app_with_agent();
+        let terminal_id = mark_agent_terminal(&mut app, 0);
+
+        let Ok(_) = app.rename_agent_target(&terminal_id.to_string(), Some("reviewer".into()))
+        else {
+            panic!("rename should succeed");
+        };
+        {
+            let terminal = app.state.terminals.get(&terminal_id).expect("terminal");
+            assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+            assert_eq!(terminal.manual_label.as_deref(), Some("reviewer"));
+        }
+
+        // Clearing the name must clear the mirrored manual label too, so the
+        // pane border does not keep rendering the stale name.
+        let Ok(_) = app.rename_agent_target(&terminal_id.to_string(), None) else {
+            panic!("clear should succeed");
+        };
+        let terminal = app.state.terminals.get(&terminal_id).expect("terminal");
+        assert!(terminal.agent_name.is_none());
+        assert!(terminal.manual_label.is_none());
+    }
+
+    #[test]
+    fn rename_pane_or_agent_routes_agent_panes_to_agent_names_and_others_to_pane_labels() {
+        // Agent pane: the name lands on agent_name (and the mirrored label).
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = mark_agent_terminal(&mut app, 0);
+        app.rename_pane_or_agent(0, pane_id, Some("planner".into()));
+        {
+            let terminal = app.state.terminals.get(&terminal_id).expect("terminal");
+            assert_eq!(terminal.agent_name.as_deref(), Some("planner"));
+            assert_eq!(terminal.manual_label.as_deref(), Some("planner"));
+        }
+
+        // Non-agent pane: the name is only a pane label, never an agent name.
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .cloned()
+            .expect("test terminal");
+        app.rename_pane_or_agent(0, pane_id, Some("scratch".into()));
+        let terminal = app.state.terminals.get(&terminal_id).expect("terminal");
+        assert_eq!(terminal.manual_label.as_deref(), Some("scratch"));
+        assert!(terminal.agent_name.is_none());
+    }
+
     #[test]
     fn agent_focus_marks_already_focused_done_agent_seen() {
         let mut app = app_with_agent();

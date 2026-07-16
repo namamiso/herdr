@@ -5,6 +5,11 @@
 ### Added
 - Added `ui.sidebar_start_collapsed` to launch Herdr with the sidebar collapsed. (#1463)
 - Added macOS support for the `HERDR_AGENT=<agent>` foreground-process hint, allowing agents hidden behind host-visible wrappers such as `nono` to use the named agent's screen manifest. (#679)
+- Added the `agent_type` Agent sidebar token, which shows a named agent's detected type such as `claude` beside its custom name and stays hidden while no custom name is set.
+
+### Changed
+- The default Agent sidebar layout now leads each entry with the agent name and a dimmed type badge, moving the workspace and tab to the second row.
+- Naming an agent pane through the in-app pane rename now sets the agent name, so it appears in the Agent panel and pane borders, and reusing an existing agent name now appends the next free number such as `reviewer 2` instead of being rejected.
 
 ### Fixed
 - Live handoff now preserves installed plugins and no longer lets the next plugin installation overwrite the existing registry. (#893)

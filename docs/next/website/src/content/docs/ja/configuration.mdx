@@ -260,8 +260,8 @@ yellow = "#f9e2af"
 [ui.sidebar.agents]
 row_gap = 0
 rows = [
-  ["state_icon", "workspace", "tab"],
-  ["agent"],
+  ["state_icon", "agent", { token = "agent_type", dim = true }],
+  ["workspace", "tab"],
 ]
 
 [ui.sidebar.spaces]
@@ -279,7 +279,8 @@ Agent の行では、次の組み込みトークンを使えます:
 - `workspace` — ワークスペース名。
 - `tab` — 利用可能な場合はタブ名。
 - `pane` — 利用可能な場合はペイン名。
-- `agent` — 検出または報告されたエージェントの表示名。
+- `agent` — 検出または報告されたエージェントの表示名。**name agent** で付けたカスタム名がある場合はそれ（下記参照）。
+- `agent_type` — `claude` や `codex` などの検出されたエージェント型。カスタム名が付いているときだけ、名前の横に型を残すために表示されます。カスタム名がないときは `agent` が型を示すため非表示になります。
 - `terminal_title` — 安全性のための正規化後の最新の OSC 0/2 ターミナルタイトル。
 - `terminal_title_stripped` — 認識された先頭のアクティビティまたはスピナーのグリフ 1 つと、それに続く空白を除去したターミナルタイトル。
 - `$name` — `name` という名前のカスタムペインメタデータ。
