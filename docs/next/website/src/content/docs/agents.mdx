@@ -114,7 +114,7 @@ herdr agent rename reviewer --clear
 
 Targets accept a unique live agent name or the pane ID that currently hosts the agent. Terminal IDs and bare agent-kind labels are not accepted.
 
-In the app you can also name the focused agent through the pane rename action (or the pane context menu), which shows **name agent** for agent panes. The name leads the Agent panel entry, with the detected agent type kept beside it (see the [`agent` and `agent_type` tokens](/docs/configuration/#sidebar-row-layouts)).
+In the app you can also name an agent by right-clicking its row in the Agent panel and choosing **Rename pane**, or through the pane rename action on the focused pane. The modal title reads **name agent** for agent panes. The name leads the Agent panel entry, with the detected agent type kept beside it (see the [`agent` and `agent_type` tokens](/docs/configuration/#sidebar-row-layouts)).
 
 Names are unique per session. If the name you choose is already taken, Herdr keeps your rename and appends the next free number, so a second `reviewer` becomes `reviewer 2`.
 

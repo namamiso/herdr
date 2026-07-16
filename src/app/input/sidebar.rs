@@ -504,7 +504,7 @@ mod tests {
 
     use super::super::{app_for_mouse_test, capture_snapshot, mouse, unique_temp_path};
     use crate::{
-        app::state::{AgentPanelScope, AgentPanelSort, DragTarget, Mode},
+        app::state::{AgentPanelScope, AgentPanelSort, ContextMenuKind, DragTarget, Mode},
         config::SidebarCollapsedModeConfig,
         detect::{Agent, AgentState},
         workspace::Workspace,
@@ -716,6 +716,58 @@ mod tests {
         assert_eq!(
             snapshot.workspaces[0].tabs[first_tab].focused,
             Some(second_pane.raw())
+        );
+    }
+
+    #[test]
+    fn right_clicking_agent_detail_row_opens_pane_menu_for_that_pane() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].set_custom_name("main".into());
+        let first_pane = ws.tabs[0].root_pane;
+        let first_tab = ws.test_add_tab(Some("logs"));
+        let second_pane = ws.tabs[first_tab].root_pane;
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        let first_terminal_id = app.state.workspaces[0].tabs[0].panes[&first_pane]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&first_terminal_id)
+            .unwrap()
+            .detected_agent = Some(Agent::Pi);
+        let second_terminal_id = app.state.workspaces[0].tabs[first_tab].panes[&second_pane]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&second_terminal_id)
+            .unwrap()
+            .detected_agent = Some(Agent::Claude);
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Right), 2, 16));
+
+        assert_eq!(app.state.mode, Mode::ContextMenu);
+        let menu = app
+            .state
+            .context_menu
+            .as_ref()
+            .expect("agent row pane menu");
+        assert!(
+            matches!(menu.kind, ContextMenuKind::Pane { pane_id, .. } if pane_id == second_pane),
+            "right-click should open a pane menu targeting the clicked agent row"
+        );
+        assert!(menu.items().contains(&"Rename pane"));
+        // The row's pane is focused so the rename action targets it.
+        assert_eq!(app.state.active, Some(0));
+        assert_eq!(app.state.workspaces[0].active_tab, first_tab);
+        assert_eq!(
+            app.state.workspaces[0].tabs[first_tab].layout.focused(),
+            second_pane
         );
     }
 

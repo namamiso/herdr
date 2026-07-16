@@ -1063,6 +1063,34 @@ impl AppState {
                         list: MenuListState::new(0),
                     });
                     self.mode = Mode::ContextMenu;
+                } else if let Some((ws_idx, tab_idx, pane_id)) =
+                    self.agent_detail_target_at(mouse.row)
+                {
+                    // Focus the row's pane first so pane-menu actions (which
+                    // operate on the active workspace) target it, then open the
+                    // same pane context menu users get on the pane itself. This
+                    // is how an agent gets named from its sidebar row.
+                    self.focus_pane_in_workspace(ws_idx, pane_id);
+                    let has_manual_label = self
+                        .workspaces
+                        .get(ws_idx)
+                        .and_then(|ws| ws.pane_state(pane_id))
+                        .and_then(|pane| self.terminals.get(&pane.attached_terminal_id))
+                        .and_then(|terminal| terminal.manual_label.as_ref())
+                        .is_some();
+                    self.context_menu = Some(ContextMenuState {
+                        kind: ContextMenuKind::Pane {
+                            ws_idx,
+                            tab_idx,
+                            pane_id,
+                            source_pane_id: None,
+                            has_manual_label,
+                        },
+                        x: mouse.column,
+                        y: mouse.row,
+                        list: MenuListState::new(0),
+                    });
+                    self.mode = Mode::ContextMenu;
                 }
             }
 
