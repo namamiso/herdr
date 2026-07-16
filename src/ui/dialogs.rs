@@ -40,6 +40,18 @@ pub(crate) fn rename_button_rects(inner: Rect) -> (Rect, Rect, Rect) {
     (rects[0], rects[1], rects[2])
 }
 
+/// Whether the pane currently targeted by the rename modal hosts an agent, so
+/// the rename reads as naming the agent rather than relabelling a plain pane.
+fn rename_target_is_agent(app: &AppState) -> bool {
+    app.active
+        .zip(app.rename_pane_target)
+        .and_then(|(ws_idx, pane_id)| {
+            let pane = app.workspaces.get(ws_idx)?.pane_state(pane_id)?;
+            app.terminals.get(&pane.attached_terminal_id)
+        })
+        .is_some_and(|terminal| terminal.is_agent_terminal())
+}
+
 pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
     super::dim_background(frame, area);
 
@@ -48,6 +60,7 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
         Mode::RenameWorkspace => "rename workspace",
         Mode::RenameTab if app.creating_new_tab => "new tab",
         Mode::RenameTab => "rename tab",
+        Mode::RenamePane if rename_target_is_agent(app) => "name agent",
         Mode::RenamePane => "rename pane",
         _ => return,
     };
@@ -772,7 +785,38 @@ mod tests {
     };
     use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 
-    use super::{confirm_close_overlay_text, render_new_linked_worktree_overlay};
+    use super::{
+        confirm_close_overlay_text, rename_target_is_agent, render_new_linked_worktree_overlay,
+    };
+
+    #[test]
+    fn rename_title_targets_agent_only_when_pane_hosts_an_agent() {
+        let mut app = AppState::test_new();
+        let workspace = Workspace::test_new("main");
+        let pane_id = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        app.active = Some(0);
+        app.rename_pane_target = Some(pane_id);
+
+        // A plain pane renames as a pane, not an agent.
+        assert!(!rename_target_is_agent(&app));
+
+        // A detected agent pane reads as naming the agent.
+        let terminal_id = app.workspaces[0].terminal_id(pane_id).cloned().unwrap();
+        app.terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(
+                Some(crate::detect::Agent::Pi),
+                crate::detect::AgentState::Idle,
+            );
+        assert!(rename_target_is_agent(&app));
+
+        // With no rename target there is nothing to treat as an agent.
+        app.rename_pane_target = None;
+        assert!(!rename_target_is_agent(&app));
+    }
 
     #[test]
     fn confirm_close_text_uses_live_workspace_cwd_label() {

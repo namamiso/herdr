@@ -28,6 +28,10 @@ pub struct PaneDetail {
     pub terminal_title_stripped: Option<String>,
     pub agent_label: String,
     pub agent_kind_label: Option<String>,
+    /// The user-assigned agent name, if any. `agent_label` folds this into the
+    /// display identity; this raw field lets the sidebar decide when to show a
+    /// separate agent-type badge next to a custom name.
+    pub agent_name: Option<String>,
     pub agent: Option<Agent>,
     pub state: AgentState,
     pub seen: bool,
@@ -92,6 +96,7 @@ impl Tab {
                     terminal_title_stripped: terminal.terminal_title_stripped(),
                     agent_label,
                     agent_kind_label,
+                    agent_name: terminal.agent_name.clone(),
                     agent: terminal.effective_known_agent(),
                     state: terminal.state,
                     seen: pane.seen,

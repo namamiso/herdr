@@ -1264,19 +1264,17 @@ fn agent_methods_round_trip_over_socket() {
     );
     assert_eq!(second_renamed["result"]["agent"]["name"], "reviewer");
 
+    // Reusing an existing agent name is auto-disambiguated with a numeric
+    // suffix instead of being rejected, so the rename still succeeds.
     let duplicate = send_request(
         &socket_path,
         r#"{"id":"agent_duplicate","method":"agent.rename","params":{"target":"reviewer","name":"worker"}}"#,
     );
-    assert_eq!(duplicate["error"]["code"], "agent_name_taken");
-    assert!(duplicate["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains(&terminal_id));
+    assert_eq!(duplicate["result"]["agent"]["name"], "worker 2");
 
     let agent_renamed = send_request(
         &socket_path,
-        r#"{"id":"agent_rename","method":"agent.rename","params":{"target":"reviewer","name":"qa"}}"#,
+        r#"{"id":"agent_rename","method":"agent.rename","params":{"target":"worker 2","name":"qa"}}"#,
     );
     assert_eq!(agent_renamed["result"]["agent"]["name"], "qa");
 

@@ -93,21 +93,15 @@ impl App {
         let resolved = self
             .resolve_agent_target(target)
             .map_err(AgentRenameError::Target)?;
+        // Validate against the strict CLI-facing name contract, then keep the
+        // fork behavior of auto-suffixing duplicates instead of rejecting them;
+        // suffixed names stay unique, so name-based agent targeting still works.
         let normalized_name = match name {
             Some(name) if valid_agent_name(&name) => Some(name),
             Some(_) => return Err(AgentRenameError::InvalidName),
             None => None,
-        };
-
-        if let Some(name) = normalized_name.as_deref() {
-            let conflicts = self.agent_name_conflicts(name, &resolved.terminal_id);
-            if !conflicts.is_empty() {
-                return Err(AgentRenameError::DuplicateName {
-                    name: name.to_string(),
-                    candidates: conflicts,
-                });
-            }
         }
+        .map(|name| self.unique_agent_name(name, &resolved.terminal_id));
 
         let Some(terminal) = self
             .state
@@ -126,8 +120,17 @@ impl App {
             return Err(AgentRenameError::NotAgent);
         }
         match normalized_name {
-            Some(name) => terminal.set_agent_name(name),
-            None => terminal.clear_agent_name(),
+            Some(name) => {
+                terminal.set_agent_name(name.clone());
+                terminal.set_manual_label(name);
+            }
+            // Naming an agent sets both the agent name and the mirrored pane
+            // label, so clearing must clear both; otherwise the pane border
+            // keeps rendering the stale manual label.
+            None => {
+                terminal.clear_agent_name();
+                terminal.clear_manual_label();
+            }
         }
         self.state.mark_session_dirty();
         self.schedule_session_save();
@@ -335,25 +338,6 @@ impl App {
                 code: "agent_launch_pending".into(),
                 message: "agent name cannot change while startup is pending".into(),
             },
-            AgentRenameError::DuplicateName { name, candidates } => crate::api::schema::ErrorBody {
-                code: "agent_name_taken".into(),
-                message: format!(
-                    "agent name {name} is already used; candidates: {}",
-                    candidates
-                        .into_iter()
-                        .map(|candidate| format!(
-                            "terminal_id={} pane_id={} workspace_id={} tab_id={} cwd={} status={:?}",
-                            candidate.terminal_id,
-                            candidate.pane_id,
-                            candidate.workspace_id,
-                            candidate.tab_id,
-                            candidate.cwd.unwrap_or_else(|| "unknown".into()),
-                            candidate.agent_status,
-                        ))
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                ),
-            },
         }
     }
 
@@ -393,6 +377,34 @@ impl App {
             foreground_cwd: pane.foreground_cwd,
             revision: pane.revision,
         })
+    }
+
+    /// Returns `desired` if no other agent already uses it, otherwise the first
+    /// free `-<n>` suffix (`"docs-writer-2"`, `"docs-writer-3"`, ...). Naming an
+    /// agent always succeeds; duplicates are disambiguated instead of rejected.
+    /// Suffixed names stay within the strict agent-name grammar (and its
+    /// 32-character cap) so name-based CLI targeting keeps working.
+    fn unique_agent_name(&self, desired: String, except_terminal_id: &str) -> String {
+        if self
+            .agent_name_conflicts(&desired, except_terminal_id)
+            .is_empty()
+        {
+            return desired;
+        }
+        (2..)
+            .map(|n| {
+                let suffix = format!("-{n}");
+                let max_base = 32usize.saturating_sub(suffix.len());
+                let base: String = desired.chars().take(max_base).collect();
+                format!("{base}{suffix}")
+            })
+            .find(|candidate| {
+                self.agent_name_conflicts(candidate, except_terminal_id)
+                    .is_empty()
+            })
+            // The range is unbounded, so a free candidate always exists; the
+            // fallback only satisfies the type checker.
+            .unwrap_or(desired)
     }
 
     fn agent_name_conflicts(
@@ -459,10 +471,6 @@ pub(super) enum AgentRenameError {
     InvalidName,
     NotAgent,
     PendingLaunch,
-    DuplicateName {
-        name: String,
-        candidates: Vec<crate::api::schema::AgentInfo>,
-    },
 }
 
 #[cfg(test)]

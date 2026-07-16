@@ -41,6 +41,7 @@ pub(crate) struct AgentPanelEntry {
     pub terminal_title_stripped: Option<String>,
     pub agent_label: Option<String>,
     pub agent_kind_label: Option<String>,
+    pub agent_name: Option<String>,
     pub agent: Option<crate::detect::Agent>,
     pub state: AgentState,
     pub seen: bool,
@@ -391,6 +392,7 @@ fn collect_agent_panel_entries_with_runtimes(
                         terminal_title_stripped: detail.terminal_title_stripped,
                         agent_label: Some(detail.agent_label),
                         agent_kind_label: detail.agent_kind_label,
+                        agent_name: detail.agent_name,
                         agent: detail.agent,
                         state: detail.state,
                         seen: detail.seen,
@@ -442,6 +444,7 @@ fn collect_plain_tab_entries_with_runtimes(
                         terminal_title_stripped: detail.terminal_title_stripped,
                         agent_label: None,
                         agent_kind_label: None,
+                        agent_name: None,
                         agent: None,
                         state: AgentState::Unknown,
                         seen: true,
@@ -2022,24 +2025,26 @@ mod tests {
 
         let first = row_text(buffer, body.y, 25);
         let second = row_text(buffer, body.y + 1, 25);
-        assert!(first.contains("one"));
-        assert_eq!(second, "   pi");
+        // The agent identity now leads the entry; workspace/tab drop to the
+        // secondary row. Neither row shows the redundant "working" state text.
+        assert!(first.contains("pi"));
+        assert!(second.contains("one"));
         assert!(!first.contains("working"));
         assert!(!second.contains("working"));
 
-        let workspace_x = find_symbol_x(buffer, body.y, body.width, "o");
-        let workspace_style = buffer[(workspace_x, body.y)].style();
-        assert_eq!(workspace_style.fg, Some(app.palette.text));
-        assert!(workspace_style.add_modifier.contains(Modifier::BOLD));
-        assert!(!workspace_style.add_modifier.contains(Modifier::DIM));
-        assert_eq!(workspace_style.bg, Some(app.palette.surface_dim));
-
-        let agent_x = find_symbol_x(buffer, body.y + 1, body.width, "p");
-        let agent_style = buffer[(agent_x, body.y + 1)].style();
+        let agent_x = find_symbol_x(buffer, body.y, body.width, "p");
+        let agent_style = buffer[(agent_x, body.y)].style();
         assert_eq!(agent_style.fg, Some(app.palette.overlay0));
         assert!(agent_style.add_modifier.contains(Modifier::DIM));
         assert!(!agent_style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(agent_style.bg, Some(app.palette.surface_dim));
+
+        let workspace_x = find_symbol_x(buffer, body.y + 1, body.width, "o");
+        let workspace_style = buffer[(workspace_x, body.y + 1)].style();
+        assert_eq!(workspace_style.fg, Some(app.palette.text));
+        assert!(workspace_style.add_modifier.contains(Modifier::BOLD));
+        assert!(!workspace_style.add_modifier.contains(Modifier::DIM));
+        assert_eq!(workspace_style.bg, Some(app.palette.surface_dim));
     }
 
     #[test]
@@ -2242,10 +2247,13 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let buffer = terminal.backend().buffer();
         let (_, agent_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
         let body = agent_panel_body_rect(agent_area, false);
-        let first = row_text(buffer, body.y, 17);
+        // The workspace/tab tokens sit on the secondary row in the default
+        // layout; the narrow render must still preserve the later tab token
+        // even as the long workspace name truncates.
+        let second = row_text(buffer, body.y + 1, 17);
 
-        assert!(first.contains("logs"), "rendered row: {first:?}");
-        assert!(first.contains('·'), "rendered row: {first:?}");
+        assert!(second.contains("logs"), "rendered row: {second:?}");
+        assert!(second.contains('·'), "rendered row: {second:?}");
     }
 
     #[test]
