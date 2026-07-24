@@ -1157,6 +1157,7 @@ mod tests {
 
     fn agent_entry(primary_tab_label: Option<&str>, agent_label: Option<&str>) -> AgentPanelEntry {
         AgentPanelEntry {
+            kind: crate::ui::sidebar::AgentPanelEntryKind::Agent,
             ws_idx: 0,
             tab_idx: 0,
             pane_id: PaneId::from_raw(1),

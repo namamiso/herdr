@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- The sidebar agent panel now also lists tabs without agent panes in a separate `tabs` group below the agent rows; clicking a tab row activates it.
+
 ## [0.7.5] - 2026-07-21
 
 ### Breaking Changes

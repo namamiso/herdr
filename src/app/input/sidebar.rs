@@ -449,19 +449,24 @@ impl AppState {
 
         let mut row_y = body.y;
         let body_bottom = body.y + body.height;
-        let entries = crate::ui::agent_panel_entries(self);
+        let panel_rows = crate::ui::agent_panel_rows(self);
         let scroll = self.agent_panel_scroll.min(metrics.max_offset_from_bottom);
-        for (index, detail) in entries.iter().enumerate().skip(scroll) {
-            let height = crate::ui::agent_entry_height_in_body(self, detail, body.height);
+        for (index, panel_row) in panel_rows.iter().enumerate().skip(scroll) {
+            let height = crate::ui::agent_panel_row_height_in_body(self, panel_row, body.height);
             if row_y.saturating_add(height) > body_bottom {
                 break;
             }
             if row >= row_y && row < row_y.saturating_add(height) {
-                return Some((detail.ws_idx, detail.tab_idx, detail.pane_id));
+                return match panel_row {
+                    crate::ui::AgentPanelRow::Entry(detail) => {
+                        Some((detail.ws_idx, detail.tab_idx, detail.pane_id))
+                    }
+                    crate::ui::AgentPanelRow::TabsHeader => None,
+                };
             }
             row_y = row_y
                 .saturating_add(height)
-                .saturating_add(crate::ui::agent_entry_gap(self, index, entries.len()))
+                .saturating_add(crate::ui::agent_entry_gap(self, index, panel_rows.len()))
                 .min(body_bottom);
         }
         None
@@ -743,6 +748,63 @@ mod tests {
         assert_eq!(
             app.state.agent_detail_target_at(body.y + 1),
             Some((1, 0, second_pane))
+        );
+    }
+
+    #[test]
+    fn clicking_plain_tab_row_activates_the_tab_and_skips_the_heading() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let agent_pane = ws.tabs[0].root_pane;
+        let plain_tab = ws.test_add_tab(Some("scratch"));
+        let plain_pane = ws.tabs[plain_tab].root_pane;
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&agent_pane]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .detected_agent = Some(Agent::Pi);
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.workspaces[0].switch_tab(0);
+
+        let detail_area = app.state.agent_panel_rect();
+        let metrics = crate::ui::agent_panel_scroll_metrics(&app.state, detail_area);
+        let body = crate::ui::agent_panel_body_rect(
+            detail_area,
+            crate::ui::should_show_scrollbar(metrics),
+        );
+
+        // Rows: agent entry (2 lines with the default token rows), the tabs
+        // heading (blank separator + label), then the plain tab entry.
+        assert_eq!(app.state.agent_detail_target_at(body.y + 2), None);
+        assert_eq!(app.state.agent_detail_target_at(body.y + 3), None);
+        assert_eq!(
+            app.state.agent_detail_target_at(body.y + 4),
+            Some((0, plain_tab, plain_pane))
+        );
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            2,
+            body.y + 3,
+        ));
+        assert_eq!(app.state.workspaces[0].active_tab, 0);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            2,
+            body.y + 4,
+        ));
+        assert_eq!(app.state.workspaces[0].active_tab, plain_tab);
+        assert_eq!(
+            app.state.workspaces[0].tabs[plain_tab].layout.focused(),
+            plain_pane
         );
     }
 

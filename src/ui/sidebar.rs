@@ -20,7 +20,16 @@ use crate::terminal::TerminalRuntimeRegistry;
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 2;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentPanelEntryKind {
+    /// A pane with a detected or assigned agent.
+    Agent,
+    /// A tab without any agent pane, listed in the trailing tabs group.
+    PlainTab,
+}
+
 pub(crate) struct AgentPanelEntry {
+    pub kind: AgentPanelEntryKind,
     pub ws_idx: usize,
     pub tab_idx: usize,
     pub pane_id: crate::layout::PaneId,
@@ -37,6 +46,12 @@ pub(crate) struct AgentPanelEntry {
     pub last_agent_state_change_seq: Option<u64>,
     pub state_labels: std::collections::HashMap<String, String>,
     pub tokens: std::collections::HashMap<String, String>,
+}
+
+/// One visual row slot in the agents panel: an entry or the tabs group header.
+pub(crate) enum AgentPanelRow {
+    Entry(Box<AgentPanelEntry>),
+    TabsHeader,
 }
 
 fn sidebar_section_heights(total_h: u16, split_ratio: f32) -> (u16, u16) {
@@ -161,6 +176,7 @@ fn collect_agent_panel_entries_with_runtimes(
                             .get(detail.tab_idx)
                             .is_some_and(|tab| !tab.is_auto_named());
                     AgentPanelEntry {
+                        kind: AgentPanelEntryKind::Agent,
                         ws_idx,
                         tab_idx: detail.tab_idx,
                         pane_id: detail.pane_id,
@@ -181,6 +197,92 @@ fn collect_agent_panel_entries_with_runtimes(
                 })
         })
         .collect()
+}
+
+fn collect_plain_tab_entries_with_runtimes(
+    app: &AppState,
+    terminal_runtimes: Option<&TerminalRuntimeRegistry>,
+) -> Vec<AgentPanelEntry> {
+    let empty_runtimes;
+    let terminal_runtimes = match terminal_runtimes {
+        Some(terminal_runtimes) => terminal_runtimes,
+        None => {
+            empty_runtimes = TerminalRuntimeRegistry::new();
+            &empty_runtimes
+        }
+    };
+
+    app.workspaces
+        .iter()
+        .enumerate()
+        .flat_map(|(ws_idx, ws)| {
+            let multi_tab = ws.tabs.len() > 1;
+            let workspace_label = ws.display_name_from(&app.terminals, terminal_runtimes);
+            ws.plain_tab_details(&app.terminals)
+                .into_iter()
+                .map(move |detail| {
+                    let show_tab = multi_tab
+                        || ws
+                            .tabs
+                            .get(detail.tab_idx)
+                            .is_some_and(|tab| !tab.is_auto_named());
+                    AgentPanelEntry {
+                        kind: AgentPanelEntryKind::PlainTab,
+                        ws_idx,
+                        tab_idx: detail.tab_idx,
+                        pane_id: detail.focus_pane,
+                        primary_label: workspace_label.clone(),
+                        primary_tab_label: show_tab.then_some(detail.tab_label),
+                        pane_label: detail.pane_label,
+                        terminal_title: detail.terminal_title,
+                        terminal_title_stripped: detail.terminal_title_stripped,
+                        agent_label: None,
+                        agent_kind_label: None,
+                        agent: None,
+                        state: AgentState::Unknown,
+                        seen: true,
+                        last_agent_state_change_seq: None,
+                        state_labels: std::collections::HashMap::new(),
+                        tokens: detail.tokens,
+                    }
+                })
+        })
+        .collect()
+}
+
+pub(crate) fn agent_panel_rows(app: &AppState) -> Vec<AgentPanelRow> {
+    agent_panel_rows_with_runtimes(app, None)
+}
+
+pub(crate) fn agent_panel_rows_from(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+) -> Vec<AgentPanelRow> {
+    agent_panel_rows_with_runtimes(app, Some(terminal_runtimes))
+}
+
+/// The panel's full row list: agent entries first (so an agent entry's index
+/// in `agent_panel_entries` is also its row index), then the tabs group.
+fn agent_panel_rows_with_runtimes(
+    app: &AppState,
+    terminal_runtimes: Option<&TerminalRuntimeRegistry>,
+) -> Vec<AgentPanelRow> {
+    let mut rows: Vec<AgentPanelRow> = agent_panel_entries_with_runtimes(app, terminal_runtimes)
+        .into_iter()
+        .map(|entry| AgentPanelRow::Entry(Box::new(entry)))
+        .collect();
+    if app.agent_view_override.is_none() {
+        let plain_tabs = collect_plain_tab_entries_with_runtimes(app, terminal_runtimes);
+        if !plain_tabs.is_empty() {
+            rows.push(AgentPanelRow::TabsHeader);
+            rows.extend(
+                plain_tabs
+                    .into_iter()
+                    .map(|entry| AgentPanelRow::Entry(Box::new(entry))),
+            );
+        }
+    }
+    rows
 }
 
 pub(super) fn agent_panel_status_key(state: AgentState, seen: bool) -> &'static str {
@@ -550,12 +652,27 @@ pub(crate) fn agent_panel_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
 }
 
 fn resolved_agent_rows(app: &AppState, entry: &AgentPanelEntry) -> Vec<Vec<ResolvedToken>> {
-    let label = entry
-        .state_labels
-        .get(agent_panel_status_key(entry.state, entry.seen))
-        .map(String::as_str)
-        .unwrap_or_else(|| state_label(entry.state, entry.seen));
+    // Plain tabs have no agent state, so the state text token drops out.
+    let label = matches!(entry.kind, AgentPanelEntryKind::Agent).then(|| {
+        entry
+            .state_labels
+            .get(agent_panel_status_key(entry.state, entry.seen))
+            .map(String::as_str)
+            .unwrap_or_else(|| state_label(entry.state, entry.seen))
+    });
     tokens::agent_rows(&app.sidebar_agents, entry, label)
+}
+
+pub(crate) fn agent_panel_row_height_in_body(
+    app: &AppState,
+    row: &AgentPanelRow,
+    body_height: u16,
+) -> u16 {
+    match row {
+        AgentPanelRow::Entry(entry) => agent_entry_height_in_body(app, entry, body_height),
+        // A blank separator line plus the heading line.
+        AgentPanelRow::TabsHeader => 2.min(body_height),
+    }
 }
 
 pub(crate) fn agent_entry_height_in_body(
@@ -586,16 +703,16 @@ fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> 
 
     let mut used_rows = 0u16;
     let mut visible = 0usize;
-    let entries = agent_panel_entries(app);
-    for (index, entry) in entries.iter().enumerate().skip(scroll) {
-        let height = agent_entry_height_in_body(app, entry, body.height);
+    let rows = agent_panel_rows(app);
+    for (index, row) in rows.iter().enumerate().skip(scroll) {
+        let height = agent_panel_row_height_in_body(app, row, body.height);
         if used_rows.saturating_add(height) > body.height {
             break;
         }
         used_rows = used_rows.saturating_add(height);
         visible += 1;
         used_rows = used_rows
-            .saturating_add(agent_entry_gap(app, index, entries.len()))
+            .saturating_add(agent_entry_gap(app, index, rows.len()))
             .min(body.height);
     }
     visible
@@ -603,19 +720,19 @@ fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> 
 
 fn agent_panel_bottom_start(app: &AppState, area: Rect) -> usize {
     let body = agent_panel_body_rect(area, false);
-    let entries = agent_panel_entries(app);
+    let rows = agent_panel_rows(app);
     let mut used_rows = 0u16;
-    let mut start = entries.len();
-    for (index, entry) in entries.iter().enumerate().rev() {
-        let gap = agent_entry_gap(app, index, entries.len());
-        let needed = agent_entry_height_in_body(app, entry, body.height).saturating_add(gap);
+    let mut start = rows.len();
+    for (index, row) in rows.iter().enumerate().rev() {
+        let gap = agent_entry_gap(app, index, rows.len());
+        let needed = agent_panel_row_height_in_body(app, row, body.height).saturating_add(gap);
         if used_rows.saturating_add(needed) > body.height {
             break;
         }
         used_rows = used_rows.saturating_add(needed);
         start = index;
     }
-    start.min(entries.len().saturating_sub(1))
+    start.min(rows.len().saturating_sub(1))
 }
 
 pub(crate) fn agent_panel_scroll_for_target(
@@ -1351,14 +1468,14 @@ fn render_agent_detail(
         );
     }
 
-    let details = agent_panel_entries_from(app, terminal_runtimes);
+    let panel_rows = agent_panel_rows_from(app, terminal_runtimes);
     let metrics = agent_panel_scroll_metrics(app, area);
     let scrollbar_rect = agent_panel_scrollbar_rect(app, area);
     let body = agent_panel_body_rect(area, should_show_scrollbar(metrics));
     if body == Rect::default() {
         return;
     }
-    if details.is_empty() && app.agent_view_override.is_some() {
+    if panel_rows.is_empty() && app.agent_view_override.is_some() {
         frame.render_widget(
             Paragraph::new(" no matching agents")
                 .style(Style::default().fg(p.overlay0).add_modifier(Modifier::DIM)),
@@ -1370,54 +1487,71 @@ fn render_agent_detail(
     let scroll = app.agent_panel_scroll.min(metrics.max_offset_from_bottom);
     let mut row_y = body.y;
     let body_bottom = body.y + body.height;
-    for (index, detail) in details.iter().enumerate().skip(scroll) {
-        let label_color = state_label_color(detail.state, detail.seen, p);
-        let rows = resolved_agent_rows(app, detail);
-        let height = (rows.len().max(1) as u16).min(body.height);
+    for (index, panel_row) in panel_rows.iter().enumerate().skip(scroll) {
+        let height = agent_panel_row_height_in_body(app, panel_row, body.height);
         if row_y.saturating_add(height) > body_bottom {
             break;
         }
 
-        let is_active = app.is_active_pane(detail.ws_idx, detail.tab_idx, detail.pane_id);
-        let row_style = if is_active {
-            Style::default().bg(p.surface_dim)
-        } else {
-            Style::default()
-        };
-        let name_style = if is_active {
-            Style::default().fg(p.text).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
-        };
-        let status_style = if is_active {
-            Style::default().fg(label_color)
-        } else {
-            Style::default().fg(label_color).add_modifier(Modifier::DIM)
-        };
-        let agent_style = Style::default().fg(p.overlay0).add_modifier(Modifier::DIM);
-        let state_icon = agent_icon(detail.state, detail.seen, app.spinner_tick, p);
+        match panel_row {
+            AgentPanelRow::TabsHeader => {
+                // First of the two header rows is a blank separator line.
+                let label_y = row_y + height.saturating_sub(1);
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![Span::styled(
+                        " tabs",
+                        Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+                    )])),
+                    Rect::new(body.x, label_y, body.width, 1),
+                );
+            }
+            AgentPanelRow::Entry(detail) => {
+                let label_color = state_label_color(detail.state, detail.seen, p);
+                let rows = resolved_agent_rows(app, detail);
 
-        for (row_index, resolved) in rows.iter().take(height as usize).enumerate() {
-            let mut spans = vec![Span::raw(if row_index == 0 { " " } else { "   " })];
-            spans.extend(resolved_token_spans(
-                resolved,
-                state_icon,
-                status_style,
-                name_style,
-                agent_style,
-                agent_style,
-                p,
-                body.width
-                    .saturating_sub(if row_index == 0 { 1 } else { 3 }) as usize,
-            ));
-            frame.render_widget(
-                Paragraph::new(Line::from(spans)).style(row_style),
-                Rect::new(body.x, row_y + row_index as u16, body.width, 1),
-            );
+                let is_active = app.is_active_pane(detail.ws_idx, detail.tab_idx, detail.pane_id);
+                let row_style = if is_active {
+                    Style::default().bg(p.surface_dim)
+                } else {
+                    Style::default()
+                };
+                let name_style = if is_active {
+                    Style::default().fg(p.text).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
+                };
+                let status_style = if is_active {
+                    Style::default().fg(label_color)
+                } else {
+                    Style::default().fg(label_color).add_modifier(Modifier::DIM)
+                };
+                let agent_style = Style::default().fg(p.overlay0).add_modifier(Modifier::DIM);
+                let state_icon = agent_icon(detail.state, detail.seen, app.spinner_tick, p);
+
+                for (row_index, resolved) in rows.iter().take(height as usize).enumerate() {
+                    let mut spans = vec![Span::raw(if row_index == 0 { " " } else { "   " })];
+                    spans.extend(resolved_token_spans(
+                        resolved,
+                        state_icon,
+                        status_style,
+                        name_style,
+                        agent_style,
+                        agent_style,
+                        p,
+                        body.width
+                            .saturating_sub(if row_index == 0 { 1 } else { 3 })
+                            as usize,
+                    ));
+                    frame.render_widget(
+                        Paragraph::new(Line::from(spans)).style(row_style),
+                        Rect::new(body.x, row_y + row_index as u16, body.width, 1),
+                    );
+                }
+            }
         }
         row_y = row_y
             .saturating_add(height)
-            .saturating_add(agent_entry_gap(app, index, details.len()))
+            .saturating_add(agent_entry_gap(app, index, panel_rows.len()))
             .min(body_bottom);
     }
 
@@ -1495,6 +1629,132 @@ mod tests {
                     row_text(buffer, row, width)
                 )
             })
+    }
+
+    fn set_detected_agent(
+        app: &mut crate::app::state::AppState,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+        agent: Agent,
+    ) {
+        let terminal_id = app.workspaces[ws_idx].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(agent);
+    }
+
+    #[test]
+    fn agent_panel_rows_list_agents_then_plain_tabs_group() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.ensure_test_terminals();
+        let agent_pane = app.workspaces[0].tabs[0].root_pane;
+        set_detected_agent(&mut app, 0, agent_pane, Agent::Pi);
+
+        let rows = agent_panel_rows(&app);
+
+        assert_eq!(rows.len(), 3);
+        assert!(matches!(&rows[0], AgentPanelRow::Entry(entry)
+            if entry.kind == AgentPanelEntryKind::Agent && entry.ws_idx == 0));
+        assert!(matches!(rows[1], AgentPanelRow::TabsHeader));
+        assert!(matches!(&rows[2], AgentPanelRow::Entry(entry)
+            if entry.kind == AgentPanelEntryKind::PlainTab && entry.ws_idx == 1));
+    }
+
+    #[test]
+    fn agent_panel_rows_omit_tabs_header_when_every_tab_has_an_agent() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one")];
+        app.ensure_test_terminals();
+        let agent_pane = app.workspaces[0].tabs[0].root_pane;
+        set_detected_agent(&mut app, 0, agent_pane, Agent::Pi);
+
+        let rows = agent_panel_rows(&app);
+
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(&rows[0], AgentPanelRow::Entry(entry)
+            if entry.kind == AgentPanelEntryKind::Agent));
+    }
+
+    #[test]
+    fn priority_sort_keeps_agent_entries_as_a_row_list_prefix() {
+        // `ensure_agent_panel_entry_visible` passes agent-entry indexes to the
+        // row-based scroll math, which is only valid while agent entries stay
+        // a strict prefix of the row list in `agent_panel_entries` order.
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![
+            Workspace::test_new("one"),
+            Workspace::test_new("two"),
+            Workspace::test_new("plain"),
+        ];
+        app.ensure_test_terminals();
+        for (ws_idx, state) in [(0, AgentState::Idle), (1, AgentState::Blocked)] {
+            let pane_id = app.workspaces[ws_idx].tabs[0].root_pane;
+            let terminal_id = app.workspaces[ws_idx].tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            let terminal = app.terminals.get_mut(&terminal_id).unwrap();
+            terminal.detected_agent = Some(Agent::Claude);
+            terminal.state = state;
+        }
+        app.agent_panel_sort = AgentPanelSort::Priority;
+
+        let entries = agent_panel_entries(&app);
+        let rows = agent_panel_rows(&app);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].ws_idx, 1);
+        for (idx, entry) in entries.iter().enumerate() {
+            assert!(matches!(&rows[idx], AgentPanelRow::Entry(row_entry)
+                if row_entry.kind == AgentPanelEntryKind::Agent
+                    && row_entry.ws_idx == entry.ws_idx
+                    && row_entry.pane_id == entry.pane_id));
+        }
+        assert!(matches!(rows[entries.len()], AgentPanelRow::TabsHeader));
+    }
+
+    #[test]
+    fn agent_view_override_hides_the_plain_tabs_group() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.ensure_test_terminals();
+        let agent_pane = app.workspaces[0].tabs[0].root_pane;
+        set_detected_agent(&mut app, 0, agent_pane, Agent::Pi);
+        app.agent_view_override = Some(crate::api::schema::AgentViewSetParams {
+            source: "example.views".to_string(),
+            label: None,
+            filter: None,
+            sort: Vec::new(),
+        });
+
+        let rows = agent_panel_rows(&app);
+
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(&rows[0], AgentPanelRow::Entry(entry)
+            if entry.kind == AgentPanelEntryKind::Agent));
+    }
+
+    #[test]
+    fn plain_tab_rows_render_under_tabs_heading() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("one")];
+        app.ensure_test_terminals();
+
+        let area = Rect::new(0, 0, 26, 20);
+        let mut terminal = Terminal::new(TestBackend::new(26, 20)).unwrap();
+        terminal
+            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let (_, agent_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
+        let body = agent_panel_body_rect(agent_area, false);
+
+        // The heading occupies two rows: a blank separator plus the label.
+        assert_eq!(row_text(buffer, body.y, 25), "");
+        assert_eq!(row_text(buffer, body.y + 1, 25), " tabs");
+        assert!(row_text(buffer, body.y + 2, 25).contains("one"));
+        // Plain tabs carry no agent state, so no state text is rendered.
+        assert!(!row_text(buffer, body.y + 2, 25).contains("idle"));
     }
 
     #[test]

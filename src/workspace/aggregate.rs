@@ -6,6 +6,17 @@ use crate::terminal::{TerminalId, TerminalState};
 
 use super::{Tab, Workspace};
 
+/// Detail info for a tab without agent panes, used by the sidebar tabs group.
+pub struct PlainTabDetail {
+    pub tab_idx: usize,
+    pub tab_label: String,
+    pub focus_pane: PaneId,
+    pub pane_label: Option<String>,
+    pub terminal_title: Option<String>,
+    pub terminal_title_stripped: Option<String>,
+    pub tokens: HashMap<String, String>,
+}
+
 /// Detail info for a single pane, used by the agent detail panel.
 pub struct PaneDetail {
     pub pane_id: PaneId,
@@ -31,6 +42,19 @@ impl Tab {
             terminals
                 .get(&pane.attached_terminal_id)
                 .is_some_and(|terminal| terminal.state == AgentState::Working)
+        })
+    }
+
+    /// Whether any pane in this tab would produce an agent row. Must stay in
+    /// sync with the filter in `pane_details`.
+    fn has_agent_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
+        self.layout.pane_ids().iter().any(|id| {
+            self.panes
+                .get(id)
+                .and_then(|pane| terminals.get(&pane.attached_terminal_id))
+                .is_some_and(|terminal| {
+                    terminal.agent_name.is_some() || terminal.effective_agent_label().is_some()
+                })
         })
     }
 
@@ -127,6 +151,43 @@ impl Workspace {
                     detail.label = format!("{}·{}", detail.tab_label, detail.agent_label);
                 }
                 detail
+            })
+            .collect()
+    }
+
+    /// Tabs without any agent pane, in tab order.
+    pub fn plain_tab_details(
+        &self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+    ) -> Vec<PlainTabDetail> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, tab)| !tab.has_agent_pane(terminals))
+            .map(|(tab_idx, tab)| {
+                let focus_pane = tab.layout.focused();
+                let terminal = tab
+                    .panes
+                    .get(&focus_pane)
+                    .and_then(|pane| terminals.get(&pane.attached_terminal_id));
+                PlainTabDetail {
+                    tab_idx,
+                    tab_label: self
+                        .tab_display_name(tab_idx)
+                        .unwrap_or_else(|| (tab_idx + 1).to_string()),
+                    focus_pane,
+                    pane_label: terminal.and_then(|terminal| {
+                        terminal
+                            .effective_title()
+                            .or_else(|| terminal.manual_label.clone())
+                    }),
+                    terminal_title: terminal.and_then(|terminal| terminal.terminal_title.clone()),
+                    terminal_title_stripped: terminal
+                        .and_then(TerminalState::terminal_title_stripped),
+                    tokens: terminal
+                        .map(|terminal| terminal.metadata_tokens.values())
+                        .unwrap_or_default(),
+                }
             })
             .collect()
     }
@@ -267,6 +328,55 @@ mod tests {
                 ("review·claude".into(), "claude".into(), Some(Agent::Claude)),
             ]
         );
+    }
+
+    #[test]
+    fn plain_tab_details_lists_only_tabs_without_agent_panes() {
+        let mut ws = Workspace::test_new("test");
+        let agent_pane = ws.tabs[0].root_pane;
+        let plain_tab = ws.test_add_tab(Some("scratch"));
+        let plain_pane = ws.tabs[plain_tab].root_pane;
+        let mut terminals = HashMap::new();
+        let mut agent_terminal = terminal_for_pane(&ws, agent_pane);
+        agent_terminal.detected_agent = Some(Agent::Pi);
+        terminals.insert(agent_terminal.id.clone(), agent_terminal);
+        let plain_terminal = terminal_for_pane(&ws, plain_pane);
+        terminals.insert(plain_terminal.id.clone(), plain_terminal);
+
+        let details = ws.plain_tab_details(&terminals);
+
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].tab_idx, plain_tab);
+        assert_eq!(details[0].tab_label, "scratch");
+        assert_eq!(details[0].focus_pane, plain_pane);
+    }
+
+    #[test]
+    fn plain_tab_details_skips_tabs_with_a_named_or_detected_agent_pane() {
+        let mut ws = Workspace::test_new("test");
+        let second_pane = ws.test_split(Direction::Horizontal);
+        let root_pane = ws.tabs[0]
+            .panes
+            .keys()
+            .find(|id| **id != second_pane)
+            .copied()
+            .unwrap();
+        let mut terminals = HashMap::new();
+        let root_terminal = terminal_for_pane(&ws, root_pane);
+        terminals.insert(root_terminal.id.clone(), root_terminal);
+        let mut second_terminal = terminal_for_pane(&ws, second_pane);
+        second_terminal.set_agent_name("planner".into());
+        let second_id = second_terminal.id.clone();
+        terminals.insert(second_id.clone(), second_terminal);
+
+        // A tab mixing agent and plain panes is not a plain tab.
+        assert!(ws.plain_tab_details(&terminals).is_empty());
+
+        terminals.get_mut(&second_id).unwrap().agent_name = None;
+        let details = ws.plain_tab_details(&terminals);
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].tab_idx, 0);
+        assert_eq!(details[0].tab_label, "1");
     }
 
     #[test]

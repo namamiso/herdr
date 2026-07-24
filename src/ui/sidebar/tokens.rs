@@ -38,7 +38,7 @@ impl ResolvedToken {
 pub(super) fn agent_rows(
     config: &AgentsSidebarConfig,
     entry: &AgentPanelEntry,
-    state_text: &str,
+    state_text: Option<&str>,
 ) -> Vec<Vec<ResolvedToken>> {
     config
         .rows_for_agent(entry.agent)
@@ -50,9 +50,8 @@ pub(super) fn agent_rows(
                     let (token, style) = configured.parts();
                     let kind = match token {
                         AgentSidebarToken::StateIcon => Some(ResolvedTokenKind::StateIcon),
-                        AgentSidebarToken::StateText => {
-                            Some(ResolvedTokenKind::StateText(state_text.to_string()))
-                        }
+                        AgentSidebarToken::StateText => state_text
+                            .map(|state_text| ResolvedTokenKind::StateText(state_text.to_string())),
                         AgentSidebarToken::Workspace => {
                             Some(ResolvedTokenKind::Workspace(entry.primary_label.clone()))
                         }
@@ -159,6 +158,7 @@ mod tests {
 
     fn entry() -> AgentPanelEntry {
         AgentPanelEntry {
+            kind: crate::ui::sidebar::AgentPanelEntryKind::Agent,
             ws_idx: 0,
             tab_idx: 0,
             pane_id: crate::layout::PaneId::from_raw(1),
@@ -193,7 +193,7 @@ mod tests {
             ..Default::default()
         };
 
-        let rows = agent_rows(&config, &entry, "working");
+        let rows = agent_rows(&config, &entry, Some("working"));
 
         assert_eq!(rows.len(), 2);
         assert_eq!(
@@ -223,7 +223,7 @@ mod tests {
         };
 
         assert_eq!(
-            agent_rows(&config, &entry, "deep in the mines"),
+            agent_rows(&config, &entry, Some("deep in the mines")),
             vec![vec![
                 ResolvedToken::unstyled(ResolvedTokenKind::StateText("deep in the mines".into())),
                 ResolvedToken::unstyled(ResolvedTokenKind::Custom("reviewing auth".into())),
@@ -249,7 +249,7 @@ mod tests {
         };
 
         assert_eq!(
-            agent_rows(&config, &entry, "working"),
+            agent_rows(&config, &entry, Some("working")),
             vec![vec![
                 ResolvedToken::unstyled(ResolvedTokenKind::TerminalTitle("⠋ raw title".into())),
                 ResolvedToken::unstyled(ResolvedTokenKind::TerminalTitle("raw title".into())),
@@ -271,7 +271,7 @@ mod tests {
         pi.agent_label = Some("renamed pi".into());
 
         assert_eq!(
-            agent_rows(&config, &pi, "working"),
+            agent_rows(&config, &pi, Some("working")),
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Agent(
                 "renamed pi".into()
             ))]]
@@ -279,7 +279,7 @@ mod tests {
 
         pi.agent = None;
         assert_eq!(
-            agent_rows(&config, &pi, "working"),
+            agent_rows(&config, &pi, Some("working")),
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
                 "repo".into()
             ))]]
