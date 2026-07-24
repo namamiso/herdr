@@ -1270,11 +1270,11 @@ fn agent_methods_round_trip_over_socket() {
         &socket_path,
         r#"{"id":"agent_duplicate","method":"agent.rename","params":{"target":"reviewer","name":"worker"}}"#,
     );
-    assert_eq!(duplicate["result"]["agent"]["name"], "worker 2");
+    assert_eq!(duplicate["result"]["agent"]["name"], "worker-2");
 
     let agent_renamed = send_request(
         &socket_path,
-        r#"{"id":"agent_rename","method":"agent.rename","params":{"target":"worker 2","name":"qa"}}"#,
+        r#"{"id":"agent_rename","method":"agent.rename","params":{"target":"worker-2","name":"qa"}}"#,
     );
     assert_eq!(agent_renamed["result"]["agent"]["name"], "qa");
 

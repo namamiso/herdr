@@ -1994,9 +1994,12 @@ mod tests {
         // The heading occupies two rows: a blank separator plus the label.
         assert_eq!(row_text(buffer, body.y, 25), "");
         assert_eq!(row_text(buffer, body.y + 1, 25), " tabs");
-        assert!(row_text(buffer, body.y + 2, 25).contains("one"));
+        // With the default token rows a plain tab renders two lines: the
+        // state icon line (all agent tokens drop out) and workspace · tab.
+        assert!(row_text(buffer, body.y + 3, 25).contains("one"));
         // Plain tabs carry no agent state, so no state text is rendered.
         assert!(!row_text(buffer, body.y + 2, 25).contains("idle"));
+        assert!(!row_text(buffer, body.y + 3, 25).contains("idle"));
     }
 
     #[test]
