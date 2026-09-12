@@ -658,4 +658,139 @@ mod tests {
             None
         );
     }
+
+    /// Tabs with no agent projected against them, derived the way a snapshot-only
+    /// client has to derive them.
+    fn agentless_tab_labels(snapshot: &protocol::ClientShellSnapshot) -> Vec<String> {
+        snapshot
+            .tabs
+            .iter()
+            .filter(|tab| {
+                !snapshot
+                    .agents
+                    .iter()
+                    .any(|agent| agent.tab_id == tab.tab_id)
+            })
+            .map(|tab| tab.label.clone())
+            .collect()
+    }
+
+    fn app_with_workspace(workspace: crate::workspace::Workspace) -> app::App {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = app::App::new(
+            &crate::config::Config::default(),
+            app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        app
+    }
+
+    fn terminal_id_for(
+        app: &app::App,
+        pane_id: crate::layout::PaneId,
+    ) -> crate::terminal::TerminalId {
+        app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .expect("test pane must have a terminal")
+            .clone()
+    }
+
+    /// Every tab reaches the wire whether or not it hosts an agent, so the set
+    /// difference `tabs - agents.tab_id` isolates exactly the agent-less tabs.
+    #[test]
+    fn snapshot_ships_every_tab_and_only_agent_panes_as_agents() {
+        let mut workspace = crate::workspace::Workspace::test_new("test");
+        let agent_pane = workspace.tabs[0].root_pane;
+        let agentless_tab = workspace.test_add_tab(Some("scratch"));
+        let mut app = app_with_workspace(workspace);
+        let agent_terminal = terminal_id_for(&app, agent_pane);
+        app.state
+            .terminals
+            .get_mut(&agent_terminal)
+            .expect("agent terminal")
+            .detected_agent = Some(crate::detect::Agent::Codex);
+
+        let snapshot = snapshot(&app, "boot", 1, None, None);
+
+        assert_eq!(snapshot.tabs.len(), 2);
+        assert_eq!(snapshot.panes.len(), 2);
+        assert_eq!(snapshot.agents.len(), 1);
+        assert_eq!(snapshot.agents[0].tab_id, snapshot.tabs[0].tab_id);
+        assert_eq!(snapshot.tabs[agentless_tab].label, "scratch");
+        assert_eq!(agentless_tab_labels(&snapshot), vec!["scratch".to_owned()]);
+    }
+
+    /// The snapshot's agent filter is `TerminalState::is_agent_terminal`, so a tab
+    /// mixing an agent pane with a plain pane is not agent-less, and clearing the
+    /// agent name flips the whole tab back.
+    #[test]
+    fn snapshot_agent_filter_covers_named_and_detected_agent_panes() {
+        let mut workspace = crate::workspace::Workspace::test_new("test");
+        let second_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let mut app = app_with_workspace(workspace);
+        let second_terminal = terminal_id_for(&app, second_pane);
+        app.state
+            .terminals
+            .get_mut(&second_terminal)
+            .expect("split terminal")
+            .set_agent_name("planner".into());
+
+        assert!(agentless_tab_labels(&snapshot(&app, "boot", 1, None, None)).is_empty());
+
+        app.state
+            .terminals
+            .get_mut(&second_terminal)
+            .expect("split terminal")
+            .agent_name = None;
+
+        assert_eq!(
+            agentless_tab_labels(&snapshot(&app, "boot", 2, None, None)),
+            vec!["1".to_owned()]
+        );
+    }
+
+    /// An active agent view narrows `agent_order` only. `agents` stays complete, so
+    /// a hidden agent's tab must not be mistaken for an agent-less one.
+    #[test]
+    fn snapshot_agents_are_not_narrowed_by_an_agent_view() {
+        let mut workspace = crate::workspace::Workspace::test_new("test");
+        let agent_pane = workspace.tabs[0].root_pane;
+        workspace.test_add_tab(Some("scratch"));
+        let mut app = app_with_workspace(workspace);
+        let agent_terminal = terminal_id_for(&app, agent_pane);
+        app.state
+            .terminals
+            .get_mut(&agent_terminal)
+            .expect("agent terminal")
+            .detected_agent = Some(crate::detect::Agent::Codex);
+
+        let unfiltered = snapshot(&app, "boot", 1, None, None);
+        assert_eq!(unfiltered.agents.len(), 1);
+        assert_eq!(unfiltered.agent_order.len(), 1);
+
+        // The agent is idle, so a blocked-only view matches nothing.
+        app.state.agent_view_override = Some(crate::api::schema::AgentViewSetParams {
+            source: "example.views".to_owned(),
+            label: Some("filtered".to_owned()),
+            filter: Some(crate::api::schema::AgentViewFilter::Eq {
+                field: crate::api::schema::AgentViewField::Builtin(
+                    crate::api::schema::AgentViewBuiltinField::Status,
+                ),
+                value: crate::api::schema::AgentViewValue::String("blocked".to_owned()),
+            }),
+            sort: Vec::new(),
+        });
+
+        let filtered = snapshot(&app, "boot", 2, None, None);
+
+        assert_eq!(filtered.agent_view_label.as_deref(), Some("filtered"));
+        assert!(filtered.agent_order.is_empty());
+        assert_eq!(filtered.agents.len(), 1);
+        assert_eq!(agentless_tab_labels(&filtered), vec!["scratch".to_owned()]);
+    }
 }
