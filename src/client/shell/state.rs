@@ -150,6 +150,9 @@ pub(super) struct ShellHitMap {
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
     pub(super) agents: Vec<(Rect, String)>,
+    /// Agent-less tab rows in the agent panel, keyed by tab id. Kept separate
+    /// from `tabs` because tab-bar drag geometry is derived from that list.
+    pub(super) sidebar_tabs: Vec<(Rect, String)>,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agent_body: Rect,
     pub(super) agent_scrollbar: Rect,

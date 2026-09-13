@@ -67,24 +67,88 @@ pub(super) fn render_agent_panel(
         return;
     }
 
-    let rows = agent_rows(snapshot, config, None);
+    // Agent rows and the agent-less tab group share one scroll region so the
+    // panel scrolls as a single list.
+    let mut rows = agent_rows(snapshot, config, None)
+        .into_iter()
+        .map(PanelRow::Agent)
+        .collect::<Vec<_>>();
+    let tab_rows = super::sidebar_tabs::tab_rows(snapshot, config, None);
+    let no_agents_notice = snapshot
+        .agent_view_label
+        .as_ref()
+        .map(|_| " no matching agents");
+    if !tab_rows.is_empty() {
+        // The tab group would otherwise make the list non-empty and swallow the
+        // empty-list notice that `render_agent_list` draws.
+        if let (true, Some(notice)) = (rows.is_empty(), no_agents_notice) {
+            rows.push(PanelRow::Notice(notice));
+        }
+        rows.push(PanelRow::TabsHeader);
+        rows.extend(tab_rows.into_iter().map(PanelRow::Tab));
+    }
+
     render_agent_list(
         buffer,
         area,
         &rows,
-        snapshot
-            .agent_view_label
-            .as_ref()
-            .map(|_| " no matching agents"),
+        no_agents_notice,
         config,
         agent_scroll,
         hits,
-        |row| row.rows.len(),
-        |buffer, rect, row, hits| {
-            hits.agents.push((rect, row.pane_id.clone()));
-            render_agent_row(buffer, rect, row, config);
+        PanelRow::height,
+        |buffer, rect, row, hits| match row {
+            PanelRow::Agent(agent) => {
+                hits.agents.push((rect, agent.pane_id.clone()));
+                render_agent_row(buffer, rect, agent, config);
+            }
+            PanelRow::Notice(notice) => put_text(
+                buffer,
+                rect.x,
+                rect.y,
+                rect.width,
+                notice,
+                Style::default()
+                    .fg(config.palette.overlay0)
+                    .add_modifier(Modifier::DIM),
+            ),
+            PanelRow::TabsHeader => put_text(
+                buffer,
+                rect.x,
+                rect.y,
+                rect.width,
+                " tabs",
+                Style::default()
+                    .fg(config.palette.overlay0)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            PanelRow::Tab(tab) => {
+                hits.sidebar_tabs.push((rect, tab.tab_id.clone()));
+                super::sidebar_tabs::render_tab_row(buffer, rect, tab, config);
+            }
         },
     );
+}
+
+/// One row of the agent panel: an agent, the agent-less tab group header, or a
+/// tab in that group.
+pub(super) enum PanelRow {
+    Agent(AgentRow),
+    /// Shown in place of the empty-list notice when an agent view matches no
+    /// agents but the tab group still has rows.
+    Notice(&'static str),
+    TabsHeader,
+    Tab(super::sidebar_tabs::TabRow),
+}
+
+impl PanelRow {
+    fn height(&self) -> usize {
+        match self {
+            Self::Agent(agent) => agent.rows.len(),
+            Self::Notice(_) | Self::TabsHeader => 1,
+            Self::Tab(tab) => tab.rows.len(),
+        }
+    }
 }
 
 pub(super) fn render_agent_panel_header(
@@ -299,7 +363,7 @@ pub(super) fn agent_rows(
                     canonical_agent,
                     tokens: &tokens,
                 },
-                state_text,
+                Some(state_text),
             );
             Some(AgentRow {
                 pane_id: agent.pane_id.clone(),
@@ -317,13 +381,26 @@ pub(super) fn render_agent_row(
     row: &AgentRow,
     config: &ClientShellConfig,
 ) {
+    render_token_rows(buffer, rect, row.status, row.focused, &row.rows, config);
+}
+
+/// Shared row painter for the agent panel. Agent rows and agent-less tab rows
+/// differ only in the tokens they resolve, so they share the styling here.
+pub(super) fn render_token_rows(
+    buffer: &mut Buffer,
+    rect: Rect,
+    status: crate::api::schema::AgentStatus,
+    focused: bool,
+    token_rows: &[Vec<crate::ui::ResolvedToken>],
+    config: &ClientShellConfig,
+) {
     let palette = &config.palette;
-    let row_style = if row.focused {
+    let row_style = if focused {
         Style::default().bg(palette.active_row_bg)
     } else {
         Style::default()
     };
-    let name_style = if row.focused {
+    let name_style = if focused {
         Style::default()
             .fg(palette.text)
             .add_modifier(Modifier::BOLD)
@@ -333,8 +410,8 @@ pub(super) fn render_agent_row(
             .add_modifier(Modifier::BOLD)
     };
     let status_style = Style::default()
-        .fg(status_color(row.status, palette))
-        .add_modifier(if row.focused {
+        .fg(status_color(status, palette))
+        .add_modifier(if focused {
             Modifier::empty()
         } else {
             Modifier::DIM
@@ -343,16 +420,16 @@ pub(super) fn render_agent_row(
         .fg(palette.overlay0)
         .add_modifier(Modifier::DIM);
     let icon = (
-        status_icon(row.status, config.status_indicators),
-        Style::default().fg(status_color(row.status, palette)),
+        status_icon(status, config.status_indicators),
+        Style::default().fg(status_color(status, palette)),
     );
-    let rows = if row.rows.is_empty() {
+    let rows = if token_rows.is_empty() {
         vec![vec![crate::ui::ResolvedToken {
             kind: crate::ui::ResolvedTokenKind::StateIcon,
             style: Default::default(),
         }]]
     } else {
-        row.rows.clone()
+        token_rows.to_vec()
     };
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
         let indent = if index == 0 { 1 } else { 3 };

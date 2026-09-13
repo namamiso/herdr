@@ -571,6 +571,132 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
     assert_eq!(compact.cells[row_start].bg, compact.cells[row_start + 2].bg);
 }
 
+/// A workspace with one agent tab and one agent-less tab: only the latter is
+/// listed in the tab group, and clicking it focuses that tab.
+fn snapshot_with_one_agentless_tab() -> ClientShellSnapshot {
+    let mut projected = snapshot();
+    let mut plain_tab = projected.tabs[0].clone();
+    plain_tab.tab_id = "tab_2".into();
+    plain_tab.label = "scratch".into();
+    plain_tab.focused = false;
+    projected.tabs.push(plain_tab);
+    let mut plain_pane = projected.panes[0].clone();
+    plain_pane.pane_id = "pane_2".into();
+    plain_pane.tab_id = "tab_2".into();
+    plain_pane.focused = false;
+    projected.panes.push(plain_pane);
+    projected.agents = vec![ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("pi one".into()),
+        display_agent: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: true,
+    }];
+    projected
+}
+
+#[test]
+fn agentless_tabs_render_in_a_group_and_focus_on_click() {
+    let mut config = Config::default();
+    config.ui.sidebar.agents.rows = vec![vec![crate::config::AgentSidebarToken::Tab]];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(snapshot_with_one_agentless_tab()));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("tab group frame");
+    let text = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Only the agent-less tab is listed, and it never lands in the tab-bar hits.
+    assert_eq!(
+        state
+            .hits
+            .sidebar_tabs
+            .iter()
+            .map(|(_, tab_id)| tab_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["tab_2"]
+    );
+
+    let row = state.hits.sidebar_tabs[0].0;
+    assert!(
+        state.hits.tabs.iter().all(|(rect, _)| rect.y != row.y),
+        "sidebar tab rows must not be registered as tab-bar hits"
+    );
+    // The label must come from the sidebar row itself, not the tab bar, so read
+    // the rendered cells at that row.
+    let sidebar_row_text = text
+        .lines()
+        .nth(row.y as usize)
+        .expect("sidebar tab row must be rendered");
+    assert!(
+        sidebar_row_text.contains("scratch"),
+        "row: {sidebar_row_text}"
+    );
+    let header_text = text
+        .lines()
+        .nth(row.y.saturating_sub(1) as usize)
+        .expect("tab group header must be rendered");
+    assert!(header_text.contains("tabs"), "header: {header_text}");
+
+    let click = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: row.x,
+        row: row.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let [ClientShellAction::Endpoint { request, .. }] = &click.actions[..] else {
+        panic!("tab row should focus through endpoint API");
+    };
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::TabFocus(target) if target.tab_id == "tab_2"
+    ));
+}
+
+#[test]
+fn agent_view_notice_survives_the_agentless_tab_group() {
+    let mut projected = snapshot_with_one_agentless_tab();
+    // A view that hides every agent must still report that it matched none.
+    projected.agent_view_label = Some("filtered".into());
+    projected.agent_order = Vec::new();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("filtered tab group frame");
+    let text = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(text.contains("no matching agents"), "frame: {text}");
+    assert!(text.contains("tabs"), "frame: {text}");
+    assert_eq!(state.hits.sidebar_tabs.len(), 1);
+}
+
 #[test]
 fn active_agent_view_controls_sidebar_order_and_focus_indices() {
     let mut projected = snapshot();

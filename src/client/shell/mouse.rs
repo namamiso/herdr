@@ -2045,6 +2045,21 @@ impl ClientShellState {
                     );
                     return;
                 }
+                let sidebar_tab_id = self
+                    .hits
+                    .sidebar_tabs
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, tab_id)| tab_id.clone());
+                if let Some(tab_id) = sidebar_tab_id {
+                    self.push_endpoint_method(
+                        crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
+                            tab_id,
+                        }),
+                        outcome,
+                    );
+                    return;
+                }
                 let scrollbar_hit = self
                     .hits
                     .panes

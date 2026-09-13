@@ -64,58 +64,59 @@ pub(crate) struct AgentTokenContext<'a> {
     pub(crate) tokens: &'a std::collections::HashMap<String, String>,
 }
 
+/// `state_text` is `None` for rows that have no agent state to report, such as
+/// the agent-less tab rows; the state text token then resolves to nothing.
 pub(crate) fn agent_rows(
     config: &AgentsSidebarConfig,
     context: AgentTokenContext<'_>,
-    state_text: &str,
+    state_text: Option<&str>,
 ) -> Vec<Vec<ResolvedToken>> {
     config
         .rows_for_agent(context.canonical_agent)
         .iter()
         .filter_map(|row| {
-            let resolved = row
-                .iter()
-                .filter_map(|configured| {
-                    let (token, style) = configured.parts();
-                    let kind = match token {
-                        AgentSidebarToken::StateIcon => Some(ResolvedTokenKind::StateIcon),
-                        AgentSidebarToken::StateText => {
-                            Some(ResolvedTokenKind::StateText(state_text.to_string()))
-                        }
-                        AgentSidebarToken::Machine => context
-                            .machine
-                            .map(|value| ResolvedTokenKind::Machine(value.to_string())),
-                        AgentSidebarToken::Workspace => {
-                            Some(ResolvedTokenKind::Workspace(context.workspace.to_string()))
-                        }
-                        AgentSidebarToken::Tab => context
-                            .tab
-                            .map(|value| ResolvedTokenKind::Tab(value.to_string())),
-                        AgentSidebarToken::Pane => context
-                            .pane
-                            .map(|value| ResolvedTokenKind::Pane(value.to_string())),
-                        AgentSidebarToken::Agent => context
-                            .agent_label
-                            .map(|value| ResolvedTokenKind::Agent(value.to_string())),
-                        AgentSidebarToken::TerminalTitle => context
-                            .terminal_title
-                            .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
-                        AgentSidebarToken::TerminalTitleStripped => context
-                            .terminal_title_stripped
-                            .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
-                        AgentSidebarToken::Custom(name) => context
-                            .tokens
-                            .get(name)
-                            .cloned()
-                            .map(ResolvedTokenKind::Custom),
-                        AgentSidebarToken::Styled { .. } => None,
-                    }?;
-                    let style = kind
-                        .text_value()
-                        .map_or(style, |value| configured.style_for_value(value));
-                    Some(ResolvedToken::new(kind, style))
-                })
-                .collect::<Vec<_>>();
+            let resolved =
+                row.iter()
+                    .filter_map(|configured| {
+                        let (token, style) = configured.parts();
+                        let kind = match token {
+                            AgentSidebarToken::StateIcon => Some(ResolvedTokenKind::StateIcon),
+                            AgentSidebarToken::StateText => state_text
+                                .map(|value| ResolvedTokenKind::StateText(value.to_string())),
+                            AgentSidebarToken::Machine => context
+                                .machine
+                                .map(|value| ResolvedTokenKind::Machine(value.to_string())),
+                            AgentSidebarToken::Workspace => {
+                                Some(ResolvedTokenKind::Workspace(context.workspace.to_string()))
+                            }
+                            AgentSidebarToken::Tab => context
+                                .tab
+                                .map(|value| ResolvedTokenKind::Tab(value.to_string())),
+                            AgentSidebarToken::Pane => context
+                                .pane
+                                .map(|value| ResolvedTokenKind::Pane(value.to_string())),
+                            AgentSidebarToken::Agent => context
+                                .agent_label
+                                .map(|value| ResolvedTokenKind::Agent(value.to_string())),
+                            AgentSidebarToken::TerminalTitle => context
+                                .terminal_title
+                                .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
+                            AgentSidebarToken::TerminalTitleStripped => context
+                                .terminal_title_stripped
+                                .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
+                            AgentSidebarToken::Custom(name) => context
+                                .tokens
+                                .get(name)
+                                .cloned()
+                                .map(ResolvedTokenKind::Custom),
+                            AgentSidebarToken::Styled { .. } => None,
+                        }?;
+                        let style = kind
+                            .text_value()
+                            .map_or(style, |value| configured.style_for_value(value));
+                        Some(ResolvedToken::new(kind, style))
+                    })
+                    .collect::<Vec<_>>();
             (!resolved.is_empty()).then_some(resolved)
         })
         .collect()
@@ -243,7 +244,7 @@ rows = [["state_icon", { token = "machine", fg = "#fff", bold = true, dim = true
         ] {
             let mut context = context(&entry);
             context.machine = Some(machine);
-            let rows = agent_rows(&config, context, "working");
+            let rows = agent_rows(&config, context, Some("working"));
             assert_eq!(rows.len(), 1);
             assert_eq!(
                 rows[0][0],
@@ -258,7 +259,10 @@ rows = [["state_icon", { token = "machine", fg = "#fff", bold = true, dim = true
             assert_eq!(token.style.bold, Some(bold));
             assert_eq!(token.style.dim, Some(dim));
         }
-        assert_eq!(agent_rows(&config, context(&entry), "working")[0].len(), 1);
+        assert_eq!(
+            agent_rows(&config, context(&entry), Some("working"))[0].len(),
+            1
+        );
     }
 
     #[test]
@@ -269,7 +273,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
 "##).unwrap();
         let mut entry = entry();
         entry.workspace = "long-workspace-name".into();
-        let rows = agent_rows(&config, context(&entry), "working");
+        let rows = agent_rows(&config, context(&entry), Some("working"));
         let theme = Style::default()
             .fg(Color::Blue)
             .add_modifier(Modifier::BOLD | Modifier::DIM);
@@ -319,7 +323,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
             ("90%", None, None),
         ] {
             entry.tokens.insert("load".into(), value.into());
-            let rows = agent_rows(&config.agents, context(&entry), "working");
+            let rows = agent_rows(&config.agents, context(&entry), Some("working"));
             assert_eq!(rows[0][0].kind, ResolvedTokenKind::Custom(value.into()));
             assert_eq!(rows[0][0].style.bold, bold);
             assert_eq!(rows[0][0].style.dim, dim);
@@ -353,7 +357,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
             ..Default::default()
         };
 
-        let rows = agent_rows(&config, context(&entry), "working");
+        let rows = agent_rows(&config, context(&entry), Some("working"));
 
         assert_eq!(rows.len(), 2);
         assert_eq!(
@@ -380,7 +384,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
         };
 
         assert_eq!(
-            agent_rows(&config, context(&entry), "working"),
+            agent_rows(&config, context(&entry), Some("working")),
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
                 "repo".into()
             ))]]
@@ -389,7 +393,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
         let mut remote_context = context(&entry);
         remote_context.machine = Some("Build");
         assert_eq!(
-            agent_rows(&config, remote_context, "working"),
+            agent_rows(&config, remote_context, Some("working")),
             vec![vec![
                 ResolvedToken::unstyled(ResolvedTokenKind::Machine("Build".into())),
                 ResolvedToken::unstyled(ResolvedTokenKind::Workspace("repo".into())),
@@ -412,7 +416,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
         };
 
         assert_eq!(
-            agent_rows(&config, context(&entry), "deep in the mines"),
+            agent_rows(&config, context(&entry), Some("deep in the mines")),
             vec![vec![
                 ResolvedToken::unstyled(ResolvedTokenKind::StateText("deep in the mines".into())),
                 ResolvedToken::unstyled(ResolvedTokenKind::Custom("reviewing auth".into())),
@@ -438,7 +442,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
         };
 
         assert_eq!(
-            agent_rows(&config, context(&entry), "working"),
+            agent_rows(&config, context(&entry), Some("working")),
             vec![vec![
                 ResolvedToken::unstyled(ResolvedTokenKind::TerminalTitle("⠋ raw title".into())),
                 ResolvedToken::unstyled(ResolvedTokenKind::TerminalTitle("raw title".into())),
@@ -460,7 +464,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
         pi.agent_label = Some("renamed pi".into());
 
         assert_eq!(
-            agent_rows(&config, context(&pi), "working"),
+            agent_rows(&config, context(&pi), Some("working")),
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Agent(
                 "renamed pi".into()
             ))]]
@@ -468,7 +472,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
 
         pi.canonical_agent = None;
         assert_eq!(
-            agent_rows(&config, context(&pi), "working"),
+            agent_rows(&config, context(&pi), Some("working")),
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
                 "repo".into()
             ))]]
