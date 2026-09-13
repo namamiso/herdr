@@ -17,6 +17,8 @@ A tab is a layout inside a workspace. Use tabs to separate views like `agents`, 
 
 Tabs are addressable from the CLI and socket API.
 
+The sidebar agent panel lists agents first, then a `tabs` group with tabs that have no agent panes, so plain shell tabs stay one click away. Clicking a row activates that tab. An active agent view filters the agent rows only; the `tabs` group keeps listing every agent-less tab.
+
 ## Pane
 
 A pane is a real terminal. Herdr renders the terminal output, sends input back to the process, and preserves the pane across client detach.
