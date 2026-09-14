@@ -50,9 +50,18 @@ impl ClientContextMenuOverlay {
                 source_pane_id,
                 has_manual_label,
                 right_click_passthrough,
+                hosts_agent,
+                has_agent_name,
                 ..
             } => {
-                let mut items = vec![item("Rename pane", Action::RenamePane)];
+                let mut items = Vec::new();
+                if *hosts_agent {
+                    items.push(item("Rename agent", Action::RenameAgent));
+                    if *has_agent_name {
+                        items.push(item("Clear agent name", Action::ClearAgentName));
+                    }
+                }
+                items.push(item("Rename pane", Action::RenamePane));
                 if *has_manual_label {
                     items.push(item("Clear pane name", Action::ClearPaneName));
                 }
@@ -152,6 +161,10 @@ impl ClientShellState {
             .focused_pane_id
             .clone()
             .filter(|focused| focused != &pane_id);
+        let agent = snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.pane_id == pane_id);
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Pane {
                 pane_id,
@@ -159,6 +172,8 @@ impl ClientShellState {
                 source_pane_id,
                 has_manual_label: pane.label.is_some(),
                 right_click_passthrough: pane.right_click_passthrough,
+                hosts_agent: agent.is_some(),
+                has_agent_name: agent.is_some_and(|agent| agent.name.is_some()),
             },
             x,
             y,
@@ -401,6 +416,28 @@ impl ClientShellState {
                 Method::PaneRename(PaneRenameParams {
                     pane_id,
                     label: None,
+                }),
+                outcome,
+            ),
+            ClientContextMenuAction::RenameAgent => {
+                let name = self.snapshot.as_deref().and_then(|snapshot| {
+                    snapshot
+                        .agents
+                        .iter()
+                        .find(|agent| agent.pane_id == pane_id)
+                        .and_then(|agent| agent.name.clone())
+                });
+                self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+                    title: "rename agent",
+                    input: name.clone().unwrap_or_default(),
+                    replace_on_type: name.is_none(),
+                    target: ClientRenameTarget::Agent { pane_id },
+                }));
+            }
+            ClientContextMenuAction::ClearAgentName => self.push_endpoint_method(
+                Method::AgentRename(crate::api::schema::AgentRenameParams {
+                    target: pane_id,
+                    name: None,
                 }),
                 outcome,
             ),

@@ -1737,6 +1737,28 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                let sidebar_tab_id = self
+                    .hits
+                    .sidebar_tabs
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, tab_id)| tab_id.clone());
+                if let Some(tab_id) = sidebar_tab_id {
+                    self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
+                    outcome.repaint = true;
+                    return;
+                }
+                let agent_pane_id = self
+                    .hits
+                    .agents
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, pane_id)| pane_id.clone());
+                if let Some(pane_id) = agent_pane_id {
+                    self.open_pane_context_menu(pane_id, mouse.column, mouse.row);
+                    outcome.repaint = true;
+                    return;
+                }
                 let pane_id = self
                     .hits
                     .panes

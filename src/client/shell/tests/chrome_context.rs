@@ -238,6 +238,180 @@ fn context_menus_capture_stable_targets_and_route_actions() {
     ));
 }
 
+/// Right-clicking an agent row opens the pane context menu for that agent's
+/// pane, which is how agents get named from the sidebar.
+#[test]
+fn agent_rows_open_the_pane_context_menu_and_rename_the_agent() {
+    let mut projected = snapshot();
+    projected.agents = vec![crate::protocol::ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: None,
+        display_agent: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: true,
+    }];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("agent sidebar frame");
+
+    let agent_row = state.hits.agents[0].0;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: agent_row.x + 1,
+        row: agent_row.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target: ClientContextMenuTarget::Pane { ref pane_id, .. },
+            ..
+        })) if pane_id == "pane_1"
+    ));
+
+    state.compose(106, 30).expect("pane context menu");
+    let items = match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu.items(),
+        _ => panic!("pane context menu"),
+    };
+    // The agent has no name yet, so only the rename entry is offered.
+    assert!(items
+        .iter()
+        .any(|item| item.action == ClientContextMenuAction::RenameAgent));
+    assert!(!items
+        .iter()
+        .any(|item| item.action == ClientContextMenuAction::ClearAgentName));
+    let rename_index = items
+        .iter()
+        .position(|item| item.action == ClientContextMenuAction::RenameAgent)
+        .expect("rename agent item");
+
+    let rename = state.hits.context_menu_rows[rename_index].0;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: rename.x + 1,
+        row: rename.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+            target: ClientRenameTarget::Agent { ref pane_id },
+            ..
+        })) if pane_id == "pane_1"
+    ));
+
+    state.insert_overlay_text("planner");
+    let submitted = state.handle_raw_events(vec![RawInputEvent::Key(
+        crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()).into(),
+    )]);
+    let [ClientShellAction::Endpoint { request, .. }] = &submitted.actions[..] else {
+        panic!("agent rename should use the endpoint API");
+    };
+    // Agent naming must go through agent.rename, not pane.rename.
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::AgentRename(params)
+            if params.target == "pane_1" && params.name.as_deref() == Some("planner")
+    ));
+}
+
+/// A named agent can have its name cleared, and a pane with no agent never
+/// offers the agent entries at all.
+#[test]
+fn agent_menu_entries_track_agent_presence_and_name() {
+    let mut projected = snapshot();
+    projected.agents = vec![crate::protocol::ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("planner".into()),
+        display_agent: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: true,
+    }];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("agent sidebar frame");
+
+    let agent_row = state.hits.agents[0].0;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: agent_row.x + 1,
+        row: agent_row.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    state.compose(106, 30).expect("pane context menu");
+    let clear_index = match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu
+            .items()
+            .iter()
+            .position(|item| item.action == ClientContextMenuAction::ClearAgentName)
+            .expect("clear agent name item"),
+        _ => panic!("pane context menu"),
+    };
+    let clear = state.hits.context_menu_rows[clear_index].0;
+    let outcome =
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: clear.x + 1,
+            row: clear.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
+        panic!("clear agent name should use the endpoint API");
+    };
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::AgentRename(params)
+            if params.target == "pane_1" && params.name.is_none()
+    ));
+
+    // A pane with no agent keeps the menu free of agent entries.
+    state.overlay = None;
+    let mut agentless = snapshot();
+    agentless.revision = 2;
+    agentless.agents = Vec::new();
+    let mut agentless_surface = surface();
+    agentless_surface.projection_revision = 2;
+    state.set_snapshot(Box::new(agentless));
+    state.set_pane_surface(agentless_surface);
+    state.compose(106, 30).expect("agentless frame");
+    let pane = state.hits.panes[0].rect;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: pane.x + 1,
+        row: pane.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let items = match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu.items(),
+        _ => panic!("pane context menu"),
+    };
+    assert!(items
+        .iter()
+        .all(|item| item.action != ClientContextMenuAction::RenameAgent
+            && item.action != ClientContextMenuAction::ClearAgentName));
+}
+
 #[test]
 fn global_menu_opens_from_sidebar_and_routes_client_actions() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));

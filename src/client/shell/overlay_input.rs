@@ -1041,6 +1041,13 @@ impl ClientShellState {
                     label: Some(trimmed.to_owned()),
                 },
             )),
+            // An empty name clears the agent name rather than setting an empty one.
+            ClientRenameTarget::Agent { pane_id } => Some(crate::api::schema::Method::AgentRename(
+                crate::api::schema::AgentRenameParams {
+                    target: pane_id,
+                    name: (!trimmed.is_empty()).then(|| trimmed.to_owned()),
+                },
+            )),
         };
         if let Some(method) = method {
             self.push_endpoint_method(method, outcome);
