@@ -58,6 +58,9 @@ pub(crate) struct AgentTokenContext<'a> {
     pub(crate) tab: Option<&'a str>,
     pub(crate) pane: Option<&'a str>,
     pub(crate) agent_label: Option<&'a str>,
+    /// The user-assigned agent name, if any. `agent_label` folds this into the
+    /// primary identity; this field lets the type badge tell the two apart.
+    pub(crate) agent_name: Option<&'a str>,
     pub(crate) terminal_title: Option<&'a str>,
     pub(crate) terminal_title_stripped: Option<&'a str>,
     pub(crate) canonical_agent: Option<crate::detect::Agent>,
@@ -98,6 +101,18 @@ pub(crate) fn agent_rows(
                             AgentSidebarToken::Agent => context
                                 .agent_label
                                 .map(|value| ResolvedTokenKind::Agent(value.to_string())),
+                            // A disambiguation badge, shown only when the agent
+                            // carries a custom name. Without a name the `agent`
+                            // token already renders the type, so the badge would
+                            // just duplicate it.
+                            AgentSidebarToken::AgentType => context
+                                .canonical_agent
+                                .filter(|_| context.agent_name.is_some())
+                                .map(|agent| {
+                                    ResolvedTokenKind::Agent(
+                                        crate::detect::agent_label(agent).to_string(),
+                                    )
+                                }),
                             AgentSidebarToken::TerminalTitle => context
                                 .terminal_title
                                 .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
@@ -198,6 +213,7 @@ mod tests {
         tab: Option<String>,
         pane: Option<String>,
         agent_label: Option<String>,
+        agent_name: Option<String>,
         terminal_title: Option<String>,
         terminal_title_stripped: Option<String>,
         canonical_agent: Option<crate::detect::Agent>,
@@ -210,6 +226,7 @@ mod tests {
             tab: None,
             pane: None,
             agent_label: Some("pi".into()),
+            agent_name: None,
             terminal_title: None,
             terminal_title_stripped: None,
             canonical_agent: Some(crate::detect::Agent::Pi),
@@ -224,11 +241,52 @@ mod tests {
             tab: entry.tab.as_deref(),
             pane: entry.pane.as_deref(),
             agent_label: entry.agent_label.as_deref(),
+            agent_name: entry.agent_name.as_deref(),
             terminal_title: entry.terminal_title.as_deref(),
             terminal_title_stripped: entry.terminal_title_stripped.as_deref(),
             canonical_agent: entry.canonical_agent,
             tokens: &entry.tokens,
         }
+    }
+
+    #[test]
+    fn agent_type_badge_appears_only_alongside_a_custom_name() {
+        let config = AgentsSidebarConfig {
+            rows: vec![vec![AgentSidebarToken::Agent, AgentSidebarToken::AgentType]],
+            ..Default::default()
+        };
+
+        // No custom name: the badge elides so it does not repeat the primary
+        // identity, which already renders the agent type.
+        let unnamed = entry();
+        assert_eq!(
+            agent_rows(&config, context(&unnamed), Some("working")),
+            vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Agent(
+                "pi".into()
+            ))]]
+        );
+
+        // Named: the primary shows the name, the badge shows the type.
+        let mut named = entry();
+        named.agent_name = Some("planner".into());
+        named.agent_label = Some("planner".into());
+        assert_eq!(
+            agent_rows(&config, context(&named), Some("working")),
+            vec![vec![
+                ResolvedToken::unstyled(ResolvedTokenKind::Agent("planner".into())),
+                ResolvedToken::unstyled(ResolvedTokenKind::Agent("pi".into())),
+            ]]
+        );
+
+        // A named agent of unknown type has nothing to badge.
+        let mut unknown_type = named;
+        unknown_type.canonical_agent = None;
+        assert_eq!(
+            agent_rows(&config, context(&unknown_type), Some("working")),
+            vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Agent(
+                "planner".into()
+            ))]]
+        );
     }
 
     #[test]

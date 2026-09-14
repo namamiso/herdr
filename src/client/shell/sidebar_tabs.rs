@@ -64,6 +64,7 @@ pub(super) fn tab_rows(
                     tab: Some(tab.label.as_str()),
                     pane: pane.and_then(|pane| pane.label.as_deref()),
                     agent_label: None,
+                    agent_name: None,
                     terminal_title: None,
                     terminal_title_stripped: None,
                     canonical_agent: None,

@@ -113,6 +113,7 @@ pub enum AgentSidebarToken {
     Tab,
     Pane,
     Agent,
+    AgentType,
     TerminalTitle,
     TerminalTitleStripped,
     Custom(String),
@@ -277,6 +278,7 @@ fn agent_token_name(token: &AgentSidebarToken) -> String {
         AgentSidebarToken::Tab => "tab".into(),
         AgentSidebarToken::Pane => "pane".into(),
         AgentSidebarToken::Agent => "agent".into(),
+        AgentSidebarToken::AgentType => "agent_type".into(),
         AgentSidebarToken::TerminalTitle => "terminal_title".into(),
         AgentSidebarToken::TerminalTitleStripped => "terminal_title_stripped".into(),
         AgentSidebarToken::Custom(name) => format!("${name}"),
@@ -336,6 +338,7 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
                 ("tab", Self::Tab),
                 ("pane", Self::Pane),
                 ("agent", Self::Agent),
+                ("agent_type", Self::AgentType),
                 ("terminal_title", Self::TerminalTitle),
                 ("terminal_title_stripped", Self::TerminalTitleStripped),
             ],
@@ -447,7 +450,20 @@ impl Default for AgentsSidebarConfig {
                     AgentSidebarToken::Workspace,
                     AgentSidebarToken::Tab,
                 ],
-                vec![AgentSidebarToken::Agent],
+                // The type badge elides unless the agent has a custom name, so
+                // by default this row stays a single agent identity.
+                vec![
+                    AgentSidebarToken::Agent,
+                    AgentSidebarToken::Styled {
+                        token: Box::new(AgentSidebarToken::AgentType),
+                        style: SidebarTokenStyle {
+                            fg: None,
+                            bold: None,
+                            dim: Some(true),
+                        },
+                        rules: Vec::new(),
+                    },
+                ],
             ],
             rows_by_agent: BTreeMap::new(),
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
@@ -498,7 +514,18 @@ mod tests {
                     AgentSidebarToken::Workspace,
                     AgentSidebarToken::Tab,
                 ],
-                vec![AgentSidebarToken::Agent],
+                vec![
+                    AgentSidebarToken::Agent,
+                    AgentSidebarToken::Styled {
+                        token: Box::new(AgentSidebarToken::AgentType),
+                        style: SidebarTokenStyle {
+                            fg: None,
+                            bold: None,
+                            dim: Some(true),
+                        },
+                        rules: Vec::new(),
+                    },
+                ],
             ]
         );
         assert!(config.agents.rows_by_agent.is_empty());
